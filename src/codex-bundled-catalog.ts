@@ -1,13 +1,31 @@
+import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import type { AppConfig } from "./config";
+import { getConfigDir } from "./config";
+import { augmentNativeModelCatalog } from "./model-catalog";
 
-interface BundledCodexCatalog {
+export interface BundledCodexCatalog {
   models: unknown[];
   [key: string]: unknown;
 }
 
-let cachedWindowsCatalog: BundledCodexCatalog | undefined;
+export interface ManagedCodexCatalogArtifact {
+  path: string;
+  data: string;
+}
+
+interface CommandResult {
+  status: number | null;
+  error?: Error;
+  stdout: string;
+}
+
+interface BundledCatalogOptions {
+  platform?: NodeJS.Platform;
+  localAppData?: string;
+  run?: (executable: string, args: string[]) => CommandResult;
+}
 
 export function findWindowsCodexExecutables(localAppData: string): string[] {
   const binRoot = join(localAppData, "OpenAI", "Codex", "bin");
@@ -33,13 +51,7 @@ export function findWindowsCodexExecutables(localAppData: string): string[] {
     .map(candidate => candidate.executable);
 }
 
-function windowsCodexCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA?.trim();
-  if (process.platform !== "win32" || !localAppData) return [];
-  return findWindowsCodexExecutables(localAppData);
-}
-
-function parseBundledCatalog(stdout: string): BundledCodexCatalog | undefined {
+export function parseBundledCodexCatalog(stdout: string): BundledCodexCatalog | undefined {
   try {
     const parsed = JSON.parse(stdout) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
@@ -51,27 +63,56 @@ function parseBundledCatalog(stdout: string): BundledCodexCatalog | undefined {
   }
 }
 
-/**
- * Codex Desktop 26.903 can fail its online `/models` refresh while its own bundled catalog remains
- * available. Read that authoritative per-install catalog only as a Windows fallback. The normal
- * bridge path still prefers the live Codex backend, so a later successful refresh automatically
- * supersedes this snapshot instead of freezing model updates through `model_catalog_json`.
- */
-export function loadBundledWindowsCodexCatalog(): BundledCodexCatalog | undefined {
-  if (cachedWindowsCatalog) return cachedWindowsCatalog;
-  for (const executable of windowsCodexCandidates()) {
-    const result = spawnSync(executable, ["debug", "models", "--bundled"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-      windowsHide: true,
-      maxBuffer: 64 * 1024 * 1024,
-    });
+function defaultRun(executable: string, args: string[]): CommandResult {
+  const result = spawnSync(executable, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return {
+    status: result.status,
+    ...(result.error ? { error: result.error } : {}),
+    stdout: result.stdout ?? "",
+  };
+}
+
+export function loadBundledWindowsCodexCatalog(
+  options: BundledCatalogOptions = {},
+): BundledCodexCatalog | undefined {
+  const platform = options.platform ?? process.platform;
+  const localAppData = options.localAppData ?? process.env.LOCALAPPDATA?.trim();
+  if (platform !== "win32" || !localAppData) return undefined;
+  const run = options.run ?? defaultRun;
+  for (const executable of findWindowsCodexExecutables(localAppData)) {
+    const result = run(executable, ["debug", "models", "--bundled"]);
     if (result.status !== 0 || result.error) continue;
-    const catalog = parseBundledCatalog(result.stdout);
-    if (!catalog) continue;
-    cachedWindowsCatalog = catalog;
-    return catalog;
+    const catalog = parseBundledCodexCatalog(result.stdout);
+    if (catalog) return catalog;
   }
   return undefined;
+}
+
+export function getManagedCodexCatalogPath(): string {
+  return join(getConfigDir(), "codex", "model-catalog.json");
+}
+
+export function buildManagedWindowsCodexCatalog(
+  config: AppConfig,
+  options: BundledCatalogOptions = {},
+): ManagedCodexCatalogArtifact | undefined {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return undefined;
+  const nativeCatalog = loadBundledWindowsCodexCatalog({ ...options, platform });
+  if (!nativeCatalog) {
+    throw new Error(
+      "Windows Codex model catalog is unavailable; expected the installed Codex CLI to support `debug models --bundled`",
+    );
+  }
+  const merged = augmentNativeModelCatalog(nativeCatalog, config);
+  return {
+    path: getManagedCodexCatalogPath(),
+    data: `${JSON.stringify(merged, null, 2)}\n`,
+  };
 }

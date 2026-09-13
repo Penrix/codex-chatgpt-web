@@ -132,6 +132,17 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
     if (catalogVerificationInFlight || !runtimeSupervisor) return;
     catalogVerificationInFlight = true;
     try {
+      const route = await runtimeHost.bridgeStatus("catalog-verification");
+      if (route.staticCatalogActive === true) {
+        const state = stateStore.update({
+          codexCatalogVerified: true,
+          codexRestartRequired: true,
+        });
+        logger.info("codex.static_model_catalog_installed");
+        send("launcher:state-changed", state);
+        stopCatalogVerificationMonitor();
+        return;
+      }
       const config = runtimeSupervisor.readConfig();
       const health = await runtimeSupervisor.proxyHealthPayload(config);
       if (!Number.isInteger(health?.successful_model_catalog_requests)
