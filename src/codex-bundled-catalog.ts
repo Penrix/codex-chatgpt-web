@@ -20,7 +20,7 @@ function windowsCodexCandidates(): string[] {
     return [];
   }
   return entries
-    .filter(entry => entry.isDirectory() && /^[a-f0-9]{32}$/i.test(entry.name))
+    .filter(entry => entry.isDirectory() && /^[a-f0-9]{12,64}$/i.test(entry.name))
     .map(entry => {
       const executable = join(binRoot, entry.name, "codex.exe");
       try {
