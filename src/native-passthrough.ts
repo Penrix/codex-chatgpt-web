@@ -150,7 +150,7 @@ function missingNativeAuthorizationResponse(): Response {
 
 async function bundledModelsFallbackResponse(
   fallback: NativeModelsFallback,
-  cause: "transport" | "upstream_5xx",
+  cause: "transport" | "upstream_error",
 ): Promise<Response | undefined> {
   try {
     const catalog = await fallback();
@@ -199,6 +199,8 @@ function withUncleanCloseTolerance(
     }
   };
   const inspectTrailingLine = (): void => {
+    // A reset can arrive before the final line separator. Treat only an exact unterminated
+    // terminator line as complete; text embedded in a JSON data payload must not qualify.
     if (lineBuffer.replace(/\r$/, "") === SSE_TERMINATOR) completed = true;
   };
   return new ReadableStream<Uint8Array>({
@@ -256,6 +258,7 @@ export async function forwardNativeCodexRequest(
   let model: string | undefined;
   let body: BodyInit | undefined;
   if (imageRequest) {
+    // Standalone image requests use their own schema; never interpret them as Responses history.
     body = await request.arrayBuffer();
   } else if (method === "POST") {
     const parseRequest = decodedBody === undefined ? request.clone() : undefined;
@@ -281,6 +284,8 @@ export async function forwardNativeCodexRequest(
     headers,
     ...(body ? { body } : {}),
     signal: request.signal,
+    // Images create work: preserve redirects as responses instead of replaying a POST or
+    // forwarding account headers to a redirect destination.
     redirect: imageRequest ? "manual" : "follow",
   });
   let upstream: Response;
@@ -293,10 +298,14 @@ export async function forwardNativeCodexRequest(
     }
     throw error;
   }
-  if (endpoint === "models" && upstream.status >= 500 && upstream.status <= 599) {
-    const fallback = await bundledModelsFallbackResponse(modelsFallback, "upstream_5xx");
+  const recoverableCatalogError = endpoint === "models"
+    && upstream.status >= 400
+    && upstream.status !== 401
+    && upstream.status !== 403;
+  if (recoverableCatalogError) {
+    const fallback = await bundledModelsFallbackResponse(modelsFallback, "upstream_error");
     if (fallback) {
-      await upstream.body?.cancel().catch(() => {});
+      if (upstream.body) await upstream.body.cancel().catch(() => {});
       return fallback;
     }
   }
@@ -308,6 +317,7 @@ export async function forwardNativeCodexRequest(
     })}`);
   }
   const responseHeaders = endToEndHeaders(upstream.headers);
+  // fetch exposes decompressed image JSON; retaining gzip/br would make Codex decode it twice.
   if (imageRequest) responseHeaders.delete("content-encoding");
   const isEventStream = (upstream.headers.get("content-type") ?? "")
     .toLowerCase()
