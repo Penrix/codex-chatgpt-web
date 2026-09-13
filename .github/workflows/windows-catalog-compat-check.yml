@@ -19,6 +19,8 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
       - name: Typecheck bridge
         run: bun run typecheck
       - name: Run catalog compatibility tests
