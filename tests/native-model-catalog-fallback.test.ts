@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { findWindowsCodexExecutables } from "../src/codex-bundled-catalog";
 import { forwardNativeCodexRequest } from "../src/native-passthrough";
 
 const bundledCatalog = {
@@ -11,6 +15,26 @@ const bundledCatalog = {
     tool_mode: "code_mode_only",
   }],
 };
+
+test("finds the 16-hex Windows Codex CLI directory used by Desktop 26.903", () => {
+  const localAppData = mkdtempSync(join(tmpdir(), "codex-catalog-discovery-"));
+  try {
+    const executable = join(
+      localAppData,
+      "OpenAI",
+      "Codex",
+      "bin",
+      "fd4c151a749f3ab4",
+      "codex.exe",
+    );
+    mkdirSync(dirname(executable), { recursive: true });
+    writeFileSync(executable, "");
+
+    expect(findWindowsCodexExecutables(localAppData)).toEqual([executable]);
+  } finally {
+    rmSync(localAppData, { recursive: true, force: true });
+  }
+});
 
 test("unauthenticated Codex /models route probes return 401 instead of bridge 502", async () => {
   let upstreamCalled = false;
