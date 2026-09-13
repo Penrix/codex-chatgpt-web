@@ -1,0 +1,124 @@
+name: Apply static catalog compatibility fix v3
+
+on:
+  push:
+    branches: [fix/windows-codex-026903-static-catalog]
+    paths: [.github/workflows/apply-static-catalog-fix-v3.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-codex-026903-static-catalog
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Generate compatibility patch
+        shell: bash
+        run: |
+          python - <<'PYRUN'
+          from pathlib import Path
+          workflow = Path('.github/workflows/apply-static-catalog-fix.yml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY\n", start)
+          body = workflow[start:end]
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
+          exec(compile(script, 'apply-static-catalog-fix.yml', 'exec'))
+          PYRUN
+      - name: Correct generated integration patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('src/codex-integration.ts')
+          text = p.read_text(encoding='utf-8')
+
+          pre_start = text.index('export function preflightCodexIntegration')
+          install_start = text.index('export function installCodexIntegration')
+          deactivate_start = text.index('export function deactivateCodexIntegration')
+          activate_start = text.index('export function activateCodexIntegration')
+          uninstall_start = text.index('export function uninstallCodexIntegration')
+
+          preflight = text[pre_start:install_start]
+          preflight, removed = re.subn(
+              r'\n  const managedCatalog = buildManagedWindowsCodexCatalog\(config\);',
+              '', preflight, count=1,
+          )
+          if removed != 1:
+              raise SystemExit(f'expected one misplaced preflight declaration, removed {removed}')
+
+          install = text[install_start:deactivate_start]
+          needle = '  const installedUrl = routeUrl(config);\n'
+          if install.count(needle) != 1:
+              raise SystemExit(f'install route anchor count was {install.count(needle)}')
+          install = install.replace(
+              needle,
+              needle + '  const managedCatalog = buildManagedWindowsCodexCatalog(config);\n',
+              1,
+          )
+
+          middle = text[deactivate_start:activate_start]
+          activate = text[activate_start:uninstall_start]
+          tail = text[uninstall_start:]
+          text = text[:pre_start] + preflight + install + middle + activate + tail
+
+          signature = re.compile(
+              r'function verifyRestoredIntegrationState\(\n'
+              r'  text: string,\n'
+              r'  journal: Exclude<AnyCodexIntegrationJournal, \{ version: 2 \}>,\n'
+              r'\): void \{'
+          )
+          replacement = '''type RestorableIntegrationJournal =
+            | CodexIntegrationJournal
+            | LegacyCodexIntegrationJournalV9
+            | LegacyCodexIntegrationJournalV8
+            | LegacyCodexIntegrationJournalV7
+            | LegacyCodexIntegrationJournalV6
+            | LegacyCodexIntegrationJournalV5
+            | LegacyCodexIntegrationJournalV4;
+
+          function verifyRestoredIntegrationState(
+            text: string,
+            journal: RestorableIntegrationJournal,
+          ): void {'''
+          replacement = '\n'.join(line[10:] if line.startswith('          ') else line for line in replacement.splitlines())
+          text, changed = signature.subn(replacement, text, count=1)
+          if changed != 1:
+              raise SystemExit(f'restored journal type replacement count was {changed}')
+
+          preflight = text[text.index('export function preflightCodexIntegration'):text.index('export function installCodexIntegration')]
+          install = text[text.index('export function installCodexIntegration'):text.index('export function deactivateCodexIntegration')]
+          activate = text[text.index('export function activateCodexIntegration'):text.index('export function uninstallCodexIntegration')]
+          if 'buildManagedWindowsCodexCatalog' in preflight:
+              raise SystemExit('managed catalog generation leaked into preflight')
+          if install.count('const managedCatalog = buildManagedWindowsCodexCatalog(config);') != 1:
+              raise SystemExit('install managed catalog declaration count mismatch')
+          if activate.count('const managedCatalog = buildManagedWindowsCodexCatalog(appConfig);') != 1:
+              raise SystemExit('activate managed catalog declaration count mismatch')
+          if text.count('const managedCatalog = buildManagedWindowsCodexCatalog') != 2:
+              raise SystemExit('unexpected total managed catalog declaration count')
+
+          p.write_text(text, encoding='utf-8')
+          PY
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - run: bun run typecheck
+      - run: bun test ./tests/codex-static-catalog.test.ts ./tests/codex-integration.test.ts ./tests/server-models.test.ts ./tests/native-passthrough.test.ts
+      - run: bun run build
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/codex-bundled-catalog.ts src/codex-static-catalog-route.ts src/codex-integration.ts launcher/electron/main.cjs tests/codex-static-catalog.test.ts
+          git commit -m "fix: install a managed static catalog for Windows Codex"
+          git push origin HEAD:fix/windows-codex-026903-static-catalog
