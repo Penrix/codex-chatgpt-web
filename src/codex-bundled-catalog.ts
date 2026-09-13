@@ -9,9 +9,7 @@ interface BundledCodexCatalog {
 
 let cachedWindowsCatalog: BundledCodexCatalog | undefined;
 
-function windowsCodexCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA?.trim();
-  if (process.platform !== "win32" || !localAppData) return [];
+export function findWindowsCodexExecutables(localAppData: string): string[] {
   const binRoot = join(localAppData, "OpenAI", "Codex", "bin");
   let entries;
   try {
@@ -33,6 +31,12 @@ function windowsCodexCandidates(): string[] {
     .filter((candidate): candidate is { executable: string; modifiedAt: number } => Boolean(candidate))
     .sort((left, right) => right.modifiedAt - left.modifiedAt)
     .map(candidate => candidate.executable);
+}
+
+function windowsCodexCandidates(): string[] {
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (process.platform !== "win32" || !localAppData) return [];
+  return findWindowsCodexExecutables(localAppData);
 }
 
 function parseBundledCatalog(stdout: string): BundledCodexCatalog | undefined {
