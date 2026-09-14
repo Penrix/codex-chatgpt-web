@@ -27,6 +27,9 @@ jobs:
       - name: Decouple V8 direct tools from Full MCP
         shell: pwsh
         run: node scripts/apply-v8-direct-tools-capability-hotfix.cjs
+      - name: Guard Automatic Sol from stale Full MCP config
+        shell: pwsh
+        run: node scripts/apply-v8-automatic-direct-guard-hotfix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -81,7 +84,8 @@ jobs:
           if (-not $adapter.Contains('capabilities: browserCapabilities')) { throw "Direct browser capability isolation missing" }
           if (-not $adapter.Contains('turnCapabilities.directToolsEnabled === true')) { throw "Direct tool capability gate missing" }
           if (-not $adapter.Contains('CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID')) { throw "Sol model id import missing" }
-          if (-not $config.Contains('directToolsEnabled: !manual && config.mode === "browser-only" && config.solAvailable')) { throw "Browser-only direct tool projection missing" }
+          if (-not $config.Contains('localToolsEnabled: manual && config.mode === "full"')) { throw "Automatic stale Full config can still expose connector tools" }
+          if (-not $config.Contains('directToolsEnabled: !manual && config.solAvailable')) { throw "Automatic Sol direct tool projection missing" }
           if (-not $runtime.Contains('automaticDirectMigrationRequired')) { throw "Automatic Full-to-direct migration missing" }
           if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
           Write-Host "V8_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
