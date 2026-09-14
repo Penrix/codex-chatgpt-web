@@ -14,16 +14,21 @@ function tomlString(value: string): string {
   return JSON.stringify(value.replace(/\\/g, "/"));
 }
 
-function nativeCatalog(codex: string): Record<string, unknown> {
-  const result = spawnSync(codex, ["debug", "models", "--bundled"], {
+function runCodex(codex: string, args: string[], env = process.env): string {
+  const result = spawnSync(codex, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env,
     timeout: 15_000,
   });
   if (result.status !== 0) {
-    throw new Error(`Codex bundled catalog discovery failed: ${result.error?.message || result.stderr || result.signal || `exit ${result.status}`}`);
+    throw new Error(`Codex ${args.join(" ")} failed: ${result.error?.message || result.stderr || result.signal || `exit ${result.status}`}`);
   }
-  const parsed = JSON.parse(result.stdout) as unknown;
+  return result.stdout;
+}
+
+function nativeCatalog(codex: string): Record<string, unknown> {
+  const parsed = JSON.parse(runCodex(codex, ["debug", "models", "--bundled"])) as unknown;
   assert(parsed && typeof parsed === "object" && !Array.isArray(parsed), "Codex bundled catalog is not an object");
   return parsed as Record<string, unknown>;
 }
@@ -99,9 +104,6 @@ const server = createServer((request, response) => {
         captureSettled = true;
         capturedResolve(body as Record<string, unknown>);
       }
-      // Give native Codex a valid terminal model response so it can close its Code Mode session and
-      // owned codex-code-mode-host process normally. Killing only codex.exe on Windows can leave the
-      // host alive and keep CODEX_HOME locked, which turns a passing planner assertion into EBUSY.
       response.statusCode = 200;
       response.setHeader("content-type", "text/event-stream; charset=utf-8");
       response.setHeader("cache-control", "no-cache");
@@ -147,6 +149,29 @@ try {
     "",
   ].join("\n"));
 
+  const childEnv = {
+    ...process.env,
+    CODEX_HOME: codexHome,
+    CODEX_PLANNER_CAPTURE_KEY: "planner-capture-key",
+    OPENAI_API_KEY: "",
+    CODEX_API_KEY: "",
+  };
+
+  // Prove what the exact binary + CODEX_HOME sees before attributing a missing request tool surface
+  // to the runtime. This separates catalog loading and feature normalization from planner assembly.
+  const debugCatalog = JSON.parse(runCodex(codex, ["debug", "models"], childEnv)) as {
+    models?: Array<Record<string, unknown>>;
+  };
+  const debugHigh = debugCatalog.models?.find(model => model.slug === "chatgpt-web/high");
+  assert(debugHigh, "Configured Codex catalog did not expose chatgpt-web/high before planner capture");
+  assert(debugHigh.tool_mode === "code_mode_only",
+    `Configured chatgpt-web/high did not retain code_mode_only: ${JSON.stringify(debugHigh)}`);
+  const features = runCodex(codex, ["features", "list"], childEnv);
+  const featureSummary = features.split(/\r?\n/)
+    .filter(line => /^code_mode(?:_host|_only|_prewarm)?\s/.test(line))
+    .join(" | ");
+  process.stdout.write(`NATIVE_CODE_MODE_PRECHECK tool_mode=${String(debugHigh.tool_mode)} features=${featureSummary}\n`);
+
   const child = spawn(codex, [
     "exec",
     "--model", "chatgpt-web/high",
@@ -156,13 +181,7 @@ try {
     "Inspect the current workspace and report the working directory.",
   ], {
     cwd: workspace,
-    env: {
-      ...process.env,
-      CODEX_HOME: codexHome,
-      CODEX_PLANNER_CAPTURE_KEY: "planner-capture-key",
-      OPENAI_API_KEY: "",
-      CODEX_API_KEY: "",
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let childStdout = "";
@@ -183,7 +202,8 @@ try {
   const body = await Promise.race([captured, timeout]);
 
   assert(body.model === "chatgpt-web/high", `Expected chatgpt-web/high request, got ${JSON.stringify(body.model)}`);
-  assert(Array.isArray(body.tools), `Native Codex planner request has no tools array: ${JSON.stringify(Object.keys(body))}`);
+  assert(Array.isArray(body.tools),
+    `Native Codex planner request has no tools array; precheck=${JSON.stringify({ tool_mode: debugHigh.tool_mode, featureSummary })}; request_keys=${JSON.stringify(Object.keys(body))}; stderr=${JSON.stringify(childStderr.slice(-5000))}`);
   const tools = body.tools as unknown[];
   const names = tools.map(toolName).filter((name): name is string => Boolean(name));
   const exec = tools.find(tool => toolName(tool) === "exec") as Record<string, unknown> | undefined;
@@ -210,8 +230,6 @@ try {
   try {
     rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   } catch (error) {
-    // GitHub's Windows runner is ephemeral. Cleanup must never override the planner result after the
-    // child has exited; retain the directory for runner teardown if an external scanner still holds it.
     process.stderr.write(`planner cleanup warning: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 }
