@@ -11,12 +11,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Apply V7 standalone launcher hotfixes
-        shell: pwsh
-        run: node scripts/apply-v7-standalone-hotfix.cjs
-      - name: Apply local-only tunnel health discovery hotfix
-        shell: pwsh
-        run: node scripts/apply-v7-health-discovery-hotfix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -63,7 +57,7 @@ jobs:
       - name: Test Windows managed tunnel connect boundary
         shell: pwsh
         run: bun test tests/tunnel.test.ts
-      - name: Verify local-only health discovery patch
+      - name: Verify committed local-only health discovery
         shell: pwsh
         run: |
           $source = Get-Content launcher/electron/runtime-supervisor.cjs -Raw
@@ -78,7 +72,7 @@ jobs:
       - name: Verify V7 route status and stale-journal repair
         shell: pwsh
         run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
-      - name: Typecheck patched runtime
+      - name: Typecheck committed runtime
         shell: pwsh
         run: bun x --no-install --bun tsc --noEmit
       - name: Build Windows installer
