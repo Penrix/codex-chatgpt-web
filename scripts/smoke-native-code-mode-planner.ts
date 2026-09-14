@@ -191,5 +191,8 @@ try {
   process.stdout.write(`NATIVE_CODE_MODE_PLANNER_SMOKE_OK tools=${describeTools(tools)}\n`);
 } finally {
   await new Promise<void>(resolveClose => server.close(() => resolveClose()));
-  rmSync(root, { recursive: true, force: true });
+  // Windows may keep CODEX_HOME files briefly locked while the killed Codex child tears down its
+  // code-mode/session resources. Retrying cleanup must not turn a successful planner assertion into
+  // a false CI failure.
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
