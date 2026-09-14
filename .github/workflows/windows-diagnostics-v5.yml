@@ -1,0 +1,57 @@
+name: Windows diagnostics v5
+
+on:
+  push:
+    branches: [fix/windows-codex-026903-static-catalog]
+    paths: [.github/workflows/windows-diagnostics-v5.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-package:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-codex-026903-static-catalog
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Apply diagnostics v5 patch
+        run: python .github/scripts/apply-windows-diagnostics-v5.py
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Verify Windows catalog and diagnostics regressions
+        run: bun test ./tests/codex-static-catalog.test.ts ./tests/native-model-catalog-fallback.test.ts ./tests/server-models.test.ts
+      - name: Verify launcher transaction regressions
+        run: node --test launcher/tests/runtime-host.test.cjs launcher/tests/browser-refresh-regression.test.cjs launcher/tests/runtime-install.test.cjs
+      - name: Typecheck bridge
+        run: bun run typecheck
+      - name: Build runtime bundle
+        run: bun run build
+      - name: Commit verified diagnostics patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher/electron/main.cjs launcher/electron/runtime.cjs launcher/tests/runtime-host.test.cjs
+          git diff --cached --check
+          git commit -m "fix: fail closed and capture Windows setup diagnostics"
+          git push origin HEAD:fix/windows-codex-026903-static-catalog
+      - name: Package Windows launcher
+        run: bun run app:package
+      - name: Smoke packaged Windows launcher
+        run: bun run app:smoke
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-windows-diagnostics-v5
+          path: launcher/artifacts/*.exe
+          if-no-files-found: error
