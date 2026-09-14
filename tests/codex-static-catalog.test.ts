@@ -103,12 +103,14 @@ test("falls back to isolated debug models when the Desktop CLI lacks --bundled",
   }
 });
 
-test("builds a native plus ChatGPT Web catalog without calling /models", () => {
+test("builds a native plus ChatGPT Web catalog only when Automatic High has its Code Mode host", () => {
   const localAppData = mkdtempSync(join(tmpdir(), "codex-static-catalog-"));
   try {
     const executable = join(localAppData, "OpenAI", "Codex", "bin", "fd4c151a749f3ab4", "codex.exe");
+    const codeModeHost = join(dirname(executable), "codex-code-mode-host.exe");
     mkdirSync(dirname(executable), { recursive: true });
     writeFileSync(executable, "");
+    writeFileSync(codeModeHost, "");
     const artifact = buildManagedWindowsCodexCatalog(defaultConfig(), {
       platform: "win32",
       localAppData,
@@ -118,6 +120,40 @@ test("builds a native plus ChatGPT Web catalog without calling /models", () => {
     const parsed = JSON.parse(artifact!.data) as { models: Array<{ slug: string }> };
     expect(parsed.models.some(model => model.slug === "gpt-5.6-sol")).toBe(true);
     expect(parsed.models.some(model => model.slug.startsWith("chatgpt-web/"))).toBe(true);
+  } finally {
+    rmSync(localAppData, { recursive: true, force: true });
+  }
+});
+
+test("rejects an incomplete Windows CLI before installing Automatic High", () => {
+  const localAppData = mkdtempSync(join(tmpdir(), "codex-static-catalog-"));
+  try {
+    const executable = join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+    mkdirSync(dirname(executable), { recursive: true });
+    writeFileSync(executable, "");
+    expect(() => buildManagedWindowsCodexCatalog(defaultConfig(), {
+      platform: "win32",
+      localAppData,
+      run: () => ({ status: 0, stdout: JSON.stringify(nativeCatalog) }),
+    })).toThrow(/requires the native Codex Code Mode host/);
+  } finally {
+    rmSync(localAppData, { recursive: true, force: true });
+  }
+});
+
+test("does not require a Code Mode host when Sol/High is unavailable", () => {
+  const localAppData = mkdtempSync(join(tmpdir(), "codex-static-catalog-"));
+  try {
+    const executable = join(localAppData, "OpenAI", "Codex", "bin", "fd4c151a749f3ab4", "codex.exe");
+    mkdirSync(dirname(executable), { recursive: true });
+    writeFileSync(executable, "");
+    const config = defaultConfig();
+    config.solAvailable = false;
+    expect(buildManagedWindowsCodexCatalog(config, {
+      platform: "win32",
+      localAppData,
+      run: () => ({ status: 0, stdout: JSON.stringify(nativeCatalog) }),
+    })).toBeDefined();
   } finally {
     rmSync(localAppData, { recursive: true, force: true });
   }
