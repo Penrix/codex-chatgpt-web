@@ -2,22 +2,26 @@ import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { defaultConfig, providerConfig } from "../src/config";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../src/types";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+// Reproduce the target-Windows upgrade state: an older Automatic installation may still persist
+// mode=full and Codex Native2 tunnel metadata. Automatic Sol must ignore that stale MCP mode and
+// use native direct tools immediately, even before Launcher migration rewrites config.json.
+const staleAutomaticFull = defaultConfig("full");
+staleAutomaticFull.browserInteractionMode = "automatic";
+staleAutomaticFull.solAvailable = true;
+staleAutomaticFull.proAvailable = false;
 const provider: CodexProviderConfig = {
-  adapter: "chatgpt-web",
+  ...providerConfig(staleAutomaticFull),
   baseUrl: `browser://v8-direct-tools-smoke-${process.pid}-${Date.now()}`,
-  chatgptWeb: {
-    localToolsEnabled: false,
-    directToolsEnabled: true,
-    solAvailable: true,
-    proAvailable: false,
-  },
 };
+assert(provider.chatgptWeb?.localToolsEnabled === false, "Stale Automatic Full config must not expose connector-backed tools");
+assert(provider.chatgptWeb?.directToolsEnabled === true, "Stale Automatic Full config must expose direct tools");
 
 function nativeRequest(input: unknown[], messages: CodexParsedRequest["context"]["messages"]): CodexParsedRequest {
   return {
@@ -91,6 +95,7 @@ try {
   assert(preparedPrompt.includes("Codex browser tool protocol"), "Direct tool protocol was not injected into the browser prompt");
   assert(preparedPrompt.includes('"name":"read_file"'), "Active Codex tool catalog was not serialized into the browser prompt");
   assert(!preparedPrompt.includes("turn_token"), "Direct tool prompt leaked the legacy MCP capability token contract");
+  assert(!preparedPrompt.includes("Codex Native2"), "Stale Full connector identity leaked into the direct browser prompt");
 
   const start = events.find(event => event.type === "tool_call_start");
   const delta = events.find(event => event.type === "tool_call_delta");
