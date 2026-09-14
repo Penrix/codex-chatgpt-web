@@ -2,13 +2,15 @@ const fs = require("node:fs");
 
 function replaceExactlyOnce(file, before, after, label) {
   const source = fs.readFileSync(file, "utf8");
-  const first = source.indexOf(before);
+  const usesCrlf = source.includes("\r\n");
+  const normalized = source.replace(/\r\n/g, "\n");
+  const first = normalized.indexOf(before);
   if (first < 0) throw new Error(`${label}: expected source block was not found in ${file}`);
-  if (source.indexOf(before, first + before.length) >= 0) {
+  if (normalized.indexOf(before, first + before.length) >= 0) {
     throw new Error(`${label}: expected source block is ambiguous in ${file}`);
   }
-  const next = source.slice(0, first) + after + source.slice(first + before.length);
-  fs.writeFileSync(file, next);
+  const patched = normalized.slice(0, first) + after + normalized.slice(first + before.length);
+  fs.writeFileSync(file, usesCrlf ? patched.replace(/\n/g, "\r\n") : patched);
 }
 
 replaceExactlyOnce(
