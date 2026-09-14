@@ -875,7 +875,8 @@ class RuntimeHost {
     try {
       const current = await this.bridgeStatus(name);
       if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");
-      if (current.active) return current;
+      const staticCatalogReady = this.platform !== "win32" || current.staticCatalogActive === true;
+      if (current.active && staticCatalogReady) return current;
       try {
         const connected = await this.run(name, ["route", "connect"], {
           embedded: true,

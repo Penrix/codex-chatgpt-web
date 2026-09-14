@@ -591,6 +591,35 @@ test("launcher connects an inactive installed route", async () => {
   assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
 });
 
+
+test("Windows startup repairs an active v10 route that is missing the managed static catalog", async () => {
+  const fixture = bridgeFixture({ active: true });
+  fixture.host.platform = "win32";
+  let staticCatalogActive = false;
+  fixture.host.bridgeStatus = async () => {
+    fixture.calls.push("route status");
+    return {
+      installed: true,
+      active: true,
+      staticCatalogActive,
+      errors: [],
+    };
+  };
+  fixture.host.run = async (_name, args) => {
+    const action = args.join(" ");
+    fixture.calls.push(action);
+    if (action !== "route connect") throw new Error(`Unexpected route action: ${action}`);
+    staticCatalogActive = true;
+    return { stdout: JSON.stringify({ changed: true, active: true }) };
+  };
+
+  const result = await fixture.host.connectBridgeRoute();
+
+  assert.equal(result.active, true);
+  assert.equal(staticCatalogActive, true);
+  assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
+});
+
 test("launcher leaves an already connected route unchanged", async () => {
   const fixture = bridgeFixture({ active: true });
   const result = await fixture.host.connectBridgeRoute();
