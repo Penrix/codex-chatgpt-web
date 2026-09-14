@@ -69,6 +69,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Apply V7 standalone launcher hotfixes
+        shell: pwsh
+        run: node scripts/apply-v7-standalone-hotfix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -112,6 +115,12 @@ jobs:
       - name: Test standalone CLI discovery and static catalog
         shell: pwsh
         run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts
+      - name: Verify V7 route status and stale-journal repair
+        shell: pwsh
+        run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
+      - name: Typecheck patched runtime
+        shell: pwsh
+        run: bun x --no-install --bun tsc --noEmit
       - name: Build Windows installer
         shell: pwsh
         run: bun run --cwd launcher package:win
@@ -123,15 +132,15 @@ jobs:
             throw "Expected exactly one Windows installer, found $($installers.Count)"
           }
           $hash = (Get-FileHash -Algorithm SHA256 $installers[0].FullName).Hash.ToLowerInvariant()
-          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-standalone-v6.txt
+          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-standalone-v7.txt
           Write-Host "Installer: $($installers[0].FullName)"
           Write-Host "SHA256: $hash"
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-web-gpt-5.0.6-standalone-cli-windows-x64
+          name: codex-web-gpt-5.0.6-standalone-cli-v7-windows-x64
           path: |
             launcher/artifacts/*.exe
-            launcher/artifacts/SHA256SUMS-standalone-v6.txt
+            launcher/artifacts/SHA256SUMS-standalone-v7.txt
           if-no-files-found: error
           retention-days: 14
 
