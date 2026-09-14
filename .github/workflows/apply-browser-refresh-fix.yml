@@ -1,0 +1,46 @@
+name: Apply Windows-safe setup refresh fix
+
+on:
+  push:
+    branches:
+      - fix/windows-codex-026903-static-catalog
+    paths:
+      - .github/workflows/apply-browser-refresh-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-codex-026903-static-catalog
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Apply browser refresh patch
+        run: python .github/scripts/apply-browser-refresh-fix.py
+      - name: Verify Desktop model-catalog fallback
+        run: bun test ./tests/codex-static-catalog.test.ts
+      - name: Verify Windows-safe browser refresh
+        run: node --test launcher/tests/browser-refresh-regression.test.cjs launcher/tests/browser-host.test.cjs
+      - name: Typecheck runtime source
+        run: bun run typecheck
+      - name: Build runtime bundle
+        run: bun run build
+      - name: Commit verified browser fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher/electron/browser-host.cjs
+          git diff --cached --check
+          git commit -m "fix: avoid Windows hard reload during setup verification"
+          git push origin HEAD:fix/windows-codex-026903-static-catalog
