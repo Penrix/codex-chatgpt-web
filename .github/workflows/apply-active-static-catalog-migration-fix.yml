@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch-test-commit:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -24,8 +24,9 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: launcher
       - name: Patch active v10 migration and add regression test
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           runtime = Path('launcher/electron/runtime.cjs')
@@ -77,6 +78,7 @@ test("Windows startup repairs an active v10 route that is missing the managed st
               raise SystemExit('regression test already present')
           insert_at = test_text.index(marker)
           tests.write_text(test_text[:insert_at] + regression + '\n' + test_text[insert_at:], encoding='utf-8')
+          PY
       - name: Run launcher regression tests
         run: node --test launcher/tests/runtime-host.test.cjs launcher/tests/runtime-install.test.cjs
       - name: Typecheck runtime source
