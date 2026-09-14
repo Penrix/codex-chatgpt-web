@@ -24,6 +24,9 @@ jobs:
       - name: Apply V8 direct Web tools import fix
         shell: pwsh
         run: node scripts/apply-v8-direct-tools-import-fix.cjs
+      - name: Decouple V8 direct tools from Full MCP
+        shell: pwsh
+        run: node scripts/apply-v8-direct-tools-capability-hotfix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -58,9 +61,9 @@ jobs:
       - name: Verify Codex Web GPT model catalog against official CLI
         shell: pwsh
         run: bun run scripts/smoke-codex-catalog.ts "$env:CODEX_SMOKE_CLI"
-      - name: Test direct browser tool protocol
+      - name: Test direct browser tool protocol and capability split
         shell: pwsh
-        run: bun test tests/chatgpt-web-direct-tools.test.ts tests/responses-lite-tools.test.ts
+        run: bun test tests/chatgpt-web-direct-tools.test.ts tests/chatgpt-web-direct-capability.test.ts tests/responses-lite-tools.test.ts
       - name: Test existing standalone catalog and tunnel boundaries
         shell: pwsh
         run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts tests/tunnel.test.ts
@@ -70,14 +73,22 @@ jobs:
           $prompt = Get-Content src/adapters/chatgpt-web/prompt.ts -Raw
           $adapter = Get-Content src/adapters/chatgpt-web/index.ts -Raw
           $worker = Get-Content src/adapters/chatgpt-web/browser-worker.ts -Raw
+          $config = Get-Content src/config.ts -Raw
+          $runtime = Get-Content launcher/electron/runtime.cjs -Raw
           if (-not $prompt.Contains('chatGptDirectToolProtocolLines(parsed)')) { throw "Direct tool prompt contract missing" }
           if (-not $adapter.Contains('parseChatGptDirectToolOutcome(rawAnswer, parsed, roundKey)')) { throw "Direct response parser missing" }
           if (-not $adapter.Contains('`${executionNamespace}:direct:${roundKey}`')) { throw "Round-local replay identity missing" }
           if (-not $adapter.Contains('capabilities: browserCapabilities')) { throw "Direct browser capability isolation missing" }
+          if (-not $adapter.Contains('turnCapabilities.directToolsEnabled === true')) { throw "Direct tool capability gate missing" }
           if (-not $adapter.Contains('CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID')) { throw "Sol model id import missing" }
+          if (-not $config.Contains('directToolsEnabled: !manual && config.mode === "browser-only" && config.solAvailable')) { throw "Browser-only direct tool projection missing" }
+          if (-not $runtime.Contains('automaticDirectMigrationRequired')) { throw "Automatic Full-to-direct migration missing" }
           if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
           Write-Host "V8_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
-      - name: Smoke production adapter direct tool handoff
+      - name: Smoke browser-only capability and Full migration
+        shell: pwsh
+        run: node scripts/smoke-v8-direct-tools-runtime.cjs
+      - name: Smoke production adapter direct tool handoff without MCP
         shell: pwsh
         run: bun run scripts/smoke-v8-direct-tools-adapter.ts
       - name: Verify V7 route status and stale-journal repair
