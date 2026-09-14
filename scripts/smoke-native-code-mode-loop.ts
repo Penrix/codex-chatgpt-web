@@ -10,6 +10,12 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value.replace(/\\/g, "/"));
 }
@@ -23,9 +29,27 @@ function nativeCatalog(codex: string): Record<string, unknown> {
   if (result.status !== 0) {
     throw new Error(`Codex bundled catalog discovery failed: ${result.error?.message || result.stderr || result.signal || `exit ${result.status}`}`);
   }
-  const parsed = JSON.parse(result.stdout) as unknown;
-  assert(parsed && typeof parsed === "object" && !Array.isArray(parsed), "Codex bundled catalog is not an object");
-  return parsed as Record<string, unknown>;
+  const parsed = record(JSON.parse(result.stdout));
+  assert(parsed, "Codex bundled catalog is not an object");
+  return parsed;
+}
+
+function requestModelTools(body: Record<string, unknown>): { tools: Record<string, unknown>[]; source: "top-level" | "additional_tools" } {
+  if (Array.isArray(body.tools)) {
+    return { tools: body.tools.map(record).filter((tool): tool is Record<string, unknown> => Boolean(tool)), source: "top-level" };
+  }
+  if (Array.isArray(body.input)) {
+    const additional = body.input
+      .map(record)
+      .find(item => item?.type === "additional_tools");
+    if (additional && Array.isArray(additional.tools)) {
+      return {
+        tools: additional.tools.map(record).filter((tool): tool is Record<string, unknown> => Boolean(tool)),
+        source: "additional_tools",
+      };
+    }
+  }
+  throw new Error(`Native loop request exposed no tools: keys=${JSON.stringify(Object.keys(body))} input=${JSON.stringify(body.input)}`);
 }
 
 function sse(events: Record<string, unknown>[]): string {
@@ -71,12 +95,6 @@ function sendSse(response: ServerResponse, events: Record<string, unknown>[]): v
   response.end(sse(events));
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
 function outputText(value: unknown): string {
   if (typeof value === "string") return value;
   if (!Array.isArray(value)) return JSON.stringify(value);
@@ -106,6 +124,7 @@ const marker = "CODE_MODE_NATIVE_EXEC_OK";
 const finalText = "NATIVE_CODE_MODE_LOOP_DONE";
 const requests: Record<string, unknown>[] = [];
 let serverFailure: Error | undefined;
+let firstToolSource: "top-level" | "additional_tools" | undefined;
 
 let secondRequestResolve!: (body: Record<string, unknown>) => void;
 let secondRequestReject!: (error: Error) => void;
@@ -138,16 +157,20 @@ const server = createServer((request, response) => {
   });
   request.on("end", () => {
     try {
-      const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-      const body = record(parsed);
+      const body = record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       assert(body, "Native loop Responses request is not an object");
       requests.push(body);
 
       if (requests.length === 1) {
-        const tools = Array.isArray(body.tools) ? body.tools.map(record).filter(Boolean) : [];
-        const names = tools.map(tool => typeof tool?.name === "string" ? tool.name : undefined).filter(Boolean);
+        const modelTools = requestModelTools(body);
+        firstToolSource = modelTools.source;
+        const names = modelTools.tools
+          .map(tool => typeof tool.name === "string" ? tool.name : undefined)
+          .filter((name): name is string => Boolean(name));
         assert(names.includes("exec"), `First native loop request did not advertise exec: ${JSON.stringify(names)}`);
         assert(names.includes("wait"), `First native loop request did not advertise wait: ${JSON.stringify(names)}`);
+        assert(modelTools.source === "additional_tools",
+          `Sol-derived High should use Responses Lite additional_tools, got ${modelTools.source}`);
         sendSse(response, [
           responseCreated("native-loop-1"),
           customToolCall(callId, "exec", code),
@@ -161,7 +184,7 @@ const server = createServer((request, response) => {
         assert(output, `Second native loop request did not contain custom_tool_call_output(${callId}): ${JSON.stringify(body.input)}`);
         const text = outputText(output.output);
         assert(text.includes(marker), `Native exec output did not contain nested exec_command marker: ${JSON.stringify(text)}`);
-        assert(text.includes("exit_code") || text.includes("exit code"), `Native exec output did not expose command completion: ${JSON.stringify(text)}`);
+        assert(/exit[_ ]code/i.test(text), `Native exec output did not expose command completion: ${JSON.stringify(text)}`);
         if (!secondRequestSettled) {
           secondRequestSettled = true;
           secondRequestResolve(body);
@@ -261,8 +284,12 @@ try {
   assert(childStdout.includes(finalText) || childStderr.includes(finalText),
     `Native Codex did not surface the final model answer: stdout=${JSON.stringify(childStdout)} stderr=${JSON.stringify(childStderr)}`);
 
-  process.stdout.write(`NATIVE_CODE_MODE_LOOP_SMOKE_OK requests=${requests.length} marker=${marker}\n`);
+  process.stdout.write(`NATIVE_CODE_MODE_LOOP_SMOKE_OK source=${firstToolSource} requests=${requests.length} marker=${marker}\n`);
 } finally {
   await new Promise<void>(resolveClose => server.close(() => resolveClose()));
-  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (error) {
+    process.stderr.write(`native loop cleanup warning: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
