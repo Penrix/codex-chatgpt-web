@@ -77,6 +77,9 @@ jobs:
           if (-not $adapter.Contains('CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID')) { throw "Sol model id import missing" }
           if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
           Write-Host "V8_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
+      - name: Smoke production adapter direct tool handoff
+        shell: pwsh
+        run: bun run scripts/smoke-v8-direct-tools-adapter.ts
       - name: Verify V7 route status and stale-journal repair
         shell: pwsh
         run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
