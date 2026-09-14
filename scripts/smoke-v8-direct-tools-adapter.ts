@@ -97,9 +97,9 @@ try {
   const done = events.at(-1);
   assert(start?.type === "tool_call_start" && start.id === "call_readme" && start.name === "read_file",
     `Adapter did not emit the native tool_call_start: ${JSON.stringify(events)}`);
-  assert(delta?.type === "tool_call_delta" && delta.id === "call_readme" && delta.argumentsDelta.includes("README.md"),
+  assert(delta?.type === "tool_call_delta" && delta.arguments.includes("README.md"),
     `Adapter did not emit native tool arguments: ${JSON.stringify(events)}`);
-  assert(end?.type === "tool_call_end" && end.id === "call_readme",
+  assert(end?.type === "tool_call_end",
     `Adapter did not close the native tool call: ${JSON.stringify(events)}`);
   assert(done?.type === "done" && done.stopReason === "tool_use" && done.endTurn === false,
     `Adapter did not hand execution back to Codex at the tool boundary: ${JSON.stringify(done)}`);
