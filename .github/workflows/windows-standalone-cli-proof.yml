@@ -1,0 +1,76 @@
+name: Windows standalone CLI proof
+
+on:
+  push:
+    branches: [feat/stable-standalone-cli-base]
+    paths:
+      - .github/workflows/windows-standalone-cli-proof.yml
+      - src/codex-bundled-catalog.ts
+      - src/codex-integration.ts
+      - src/codex-static-catalog-route.ts
+      - tests/codex-static-catalog.test.ts
+
+permissions:
+  contents: read
+
+jobs:
+  test-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/stable-standalone-cli-base
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Verify static catalog regressions
+        run: bun test ./tests/codex-static-catalog.test.ts
+      - name: Typecheck bridge
+        run: bun run typecheck
+      - name: Install official standalone Codex CLI 0.154.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Invoke-RestMethod 'https://api.github.com/repos/openai/codex/releases/tags/rust-v0.154.0'
+          $asset = $release.assets | Where-Object { $_.name -match '^codex.*x86_64-pc-windows-msvc' } | Select-Object -First 1
+          if (-not $asset) { throw 'Official Windows x64 Codex CLI asset was not found in rust-v0.154.0' }
+          $download = Join-Path $env:RUNNER_TEMP $asset.name
+          Invoke-WebRequest $asset.browser_download_url -OutFile $download
+          $extract = Join-Path $env:RUNNER_TEMP 'codex-official-0.154.0'
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          if ($asset.name.EndsWith('.zip')) {
+            Expand-Archive $download -DestinationPath $extract -Force
+          } elseif ($asset.name.EndsWith('.tar.gz')) {
+            tar -xzf $download -C $extract
+          } else {
+            Copy-Item $download (Join-Path $extract 'codex.exe')
+          }
+          $source = Get-ChildItem $extract -Recurse -Filter 'codex.exe' | Select-Object -First 1
+          if (-not $source) { throw "Downloaded asset $($asset.name) did not contain codex.exe" }
+          $target = Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin\codex.exe'
+          New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+          Copy-Item $source.FullName $target -Force
+          & $target --version
+      - name: Verify real 0.154.0 standalone catalog discovery and merge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          bun -e 'import { buildManagedWindowsCodexCatalog } from "./src/codex-bundled-catalog"; import { defaultConfig } from "./src/config"; const artifact = buildManagedWindowsCodexCatalog(defaultConfig()); if (!artifact) throw new Error("no catalog artifact"); const parsed = JSON.parse(artifact.data); const slugs = parsed.models.map((model) => model.slug); const web = slugs.filter((slug) => slug.startsWith("chatgpt-web/")); const native = slugs.filter((slug) => !slug.startsWith("chatgpt-web/")); console.log(JSON.stringify({ native: native.length, web })); if (native.length === 0 || !web.includes("chatgpt-web/high")) process.exit(1);'
+      - name: Build runtime bundle
+        run: bun run build
+      - name: Package Windows launcher
+        run: bun run app:package
+      - name: Smoke packaged Windows launcher
+        run: bun run app:smoke
+      - name: Upload Windows proof installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-standalone-cli-proof
+          path: launcher/artifacts/*.exe
+          if-no-files-found: error
