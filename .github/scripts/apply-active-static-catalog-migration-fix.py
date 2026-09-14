@@ -4,11 +4,13 @@ runtime = Path("launcher/electron/runtime.cjs")
 text = runtime.read_text(encoding="utf-8")
 old = '''      const current = await this.bridgeStatus(name);\n      if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");\n      if (current.active) return current;\n      try {\n'''
 new = '''      const current = await this.bridgeStatus(name);\n      if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");\n      const staticCatalogReady = this.platform !== "win32" || current.staticCatalogActive === true;\n      if (current.active && staticCatalogReady) return current;\n      try {\n'''
-if old not in text:
-    raise SystemExit("runtime connectBridgeRoute anchor not found")
-if text.count(old) != 1:
-    raise SystemExit(f"runtime anchor count was {text.count(old)}, expected 1")
-runtime.write_text(text.replace(old, new, 1), encoding="utf-8")
+if old in text:
+    if text.count(old) != 1:
+        raise SystemExit(f"runtime anchor count was {text.count(old)}, expected 1")
+    text = text.replace(old, new, 1)
+elif new not in text:
+    raise SystemExit("runtime connectBridgeRoute migration guard is missing")
+runtime.write_text(text, encoding="utf-8")
 
 tests = Path("launcher/tests/runtime-host.test.cjs")
 test_text = tests.read_text(encoding="utf-8")
@@ -45,7 +47,29 @@ test("Windows startup repairs an active v10 route that is missing the managed st
 });
 
 '''
-if "Windows startup repairs an active v10 route that is missing the managed static catalog" in test_text:
-    raise SystemExit("regression test already present")
-insert_at = test_text.index(marker)
-tests.write_text(test_text[:insert_at] + regression + test_text[insert_at:], encoding="utf-8")
+if "Windows startup repairs an active v10 route that is missing the managed static catalog" not in test_text:
+    insert_at = test_text.index(marker)
+    test_text = test_text[:insert_at] + regression + test_text[insert_at:]
+
+fixture_old = "function bridgeFixture({ active }) {"
+fixture_new = "function bridgeFixture({ active, staticCatalogActive = false }) {"
+if fixture_old in test_text:
+    test_text = test_text.replace(fixture_old, fixture_new, 1)
+elif fixture_new not in test_text:
+    raise SystemExit("bridgeFixture signature not found")
+
+status_old = 'return { stdout: JSON.stringify({ installed: true, active: routeActive, errors: [] }) };'
+status_new = 'return { stdout: JSON.stringify({ installed: true, active: routeActive, staticCatalogActive, errors: [] }) };'
+if status_old in test_text:
+    test_text = test_text.replace(status_old, status_new, 1)
+elif status_new not in test_text:
+    raise SystemExit("bridgeFixture route status response not found")
+
+unchanged_old = '''test("launcher leaves an already connected route unchanged", async () => {\n  const fixture = bridgeFixture({ active: true });'''
+unchanged_new = '''test("launcher leaves an already connected route unchanged", async () => {\n  const fixture = bridgeFixture({ active: true, staticCatalogActive: true });'''
+if unchanged_old in test_text:
+    test_text = test_text.replace(unchanged_old, unchanged_new, 1)
+elif unchanged_new not in test_text:
+    raise SystemExit("already-connected route test not found")
+
+tests.write_text(test_text, encoding="utf-8")
