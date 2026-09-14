@@ -84,11 +84,12 @@ try {
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  const expectedSpawnOverrides = [
-    "gpt-5.6-sol",
-    ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
-  ];
-  if (JSON.stringify(spawnOverrides) !== JSON.stringify(expectedSpawnOverrides)) {
+  const expectedWebSpawnOverrides = CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug);
+  const nativeSpawnOverride = spawnOverrides[0];
+  if (spawnOverrides.length !== 5
+    || !nativeSpawnOverride
+    || nativeSpawnOverride.startsWith("chatgpt-web/")
+    || JSON.stringify(spawnOverrides.slice(1)) !== JSON.stringify(expectedWebSpawnOverrides)) {
     throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);
   }
   process.stdout.write("NATIVE_CODEX_CATALOG_SMOKE_OK\n");
