@@ -34,19 +34,28 @@ function nativeCatalog(codex: string): Record<string, unknown> {
   return parsed;
 }
 
-function requestModelTools(body: Record<string, unknown>): { tools: Record<string, unknown>[]; source: "top-level" | "additional_tools" } {
-  if (Array.isArray(body.tools)) {
-    return { tools: body.tools.map(record).filter((tool): tool is Record<string, unknown> => Boolean(tool)), source: "top-level" };
+function flattenModelTools(values: unknown[]): Record<string, unknown>[] {
+  const flattened: Record<string, unknown>[] = [];
+  for (const value of values) {
+    const tool = record(value);
+    if (!tool) continue;
+    if (tool.type === "namespace" && Array.isArray(tool.tools)) {
+      flattened.push(...flattenModelTools(tool.tools));
+      continue;
+    }
+    flattened.push(tool);
   }
+  return flattened;
+}
+
+function requestModelTools(body: Record<string, unknown>): { tools: Record<string, unknown>[]; source: "top-level" | "additional_tools" } {
+  if (Array.isArray(body.tools)) return { tools: flattenModelTools(body.tools), source: "top-level" };
   if (Array.isArray(body.input)) {
     const additional = body.input
       .map(record)
       .find(item => item?.type === "additional_tools");
     if (additional && Array.isArray(additional.tools)) {
-      return {
-        tools: additional.tools.map(record).filter((tool): tool is Record<string, unknown> => Boolean(tool)),
-        source: "additional_tools",
-      };
+      return { tools: flattenModelTools(additional.tools), source: "additional_tools" };
     }
   }
   throw new Error(`Native loop request exposed no tools: keys=${JSON.stringify(Object.keys(body))} input=${JSON.stringify(body.input)}`);
