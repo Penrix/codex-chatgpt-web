@@ -49,6 +49,12 @@ function describeTools(tools: unknown[]): string {
   return JSON.stringify(tools.map(tool => ({ type: toolType(tool), name: toolName(tool) })));
 }
 
+function codeModeFeatureSummary(text: string): string {
+  return text.split(/\r?\n/)
+    .filter(line => /^code_mode(?:_host|_only|_prewarm)?\s/.test(line))
+    .join(" | ");
+}
+
 function terminalSse(): string {
   const events = [
     { type: "response.created", response: { id: "planner-capture" } },
@@ -157,8 +163,6 @@ try {
     CODEX_API_KEY: "",
   };
 
-  // Prove what the exact binary + CODEX_HOME sees before attributing a missing request tool surface
-  // to the runtime. This separates catalog loading and feature normalization from planner assembly.
   const debugCatalog = JSON.parse(runCodex(codex, ["debug", "models"], childEnv)) as {
     models?: Array<Record<string, unknown>>;
   };
@@ -166,13 +170,23 @@ try {
   assert(debugHigh, "Configured Codex catalog did not expose chatgpt-web/high before planner capture");
   assert(debugHigh.tool_mode === "code_mode_only",
     `Configured chatgpt-web/high did not retain code_mode_only: ${JSON.stringify(debugHigh)}`);
-  const features = runCodex(codex, ["features", "list"], childEnv);
-  const featureSummary = features.split(/\r?\n/)
-    .filter(line => /^code_mode(?:_host|_only|_prewarm)?\s/.test(line))
-    .join(" | ");
-  process.stdout.write(`NATIVE_CODE_MODE_PRECHECK tool_mode=${String(debugHigh.tool_mode)} features=${featureSummary}\n`);
+
+  const baselineFeatures = codeModeFeatureSummary(runCodex(codex, ["features", "list"], childEnv));
+  // 0.154 exposes the standalone host by default but keeps the JavaScript Code Mode engine behind
+  // the code_mode feature. Prior clean-config captures proved that model_info.tool_mode alone can
+  // still produce a request with no tools. This control run enables only the engine for this process;
+  // it does not mutate CODEX_HOME and therefore isolates the feature gate from the routed catalog.
+  const enabledFeatures = codeModeFeatureSummary(runCodex(
+    codex,
+    ["-c", "features.code_mode=true", "features", "list"],
+    childEnv,
+  ));
+  process.stdout.write(`NATIVE_CODE_MODE_PRECHECK tool_mode=${String(debugHigh.tool_mode)} baseline=${baselineFeatures} enabled=${enabledFeatures}\n`);
+  assert(/code_mode\s+under development\s+true/.test(enabledFeatures),
+    `Per-process code_mode override did not enable the engine: ${enabledFeatures}`);
 
   const child = spawn(codex, [
+    "-c", "features.code_mode=true",
     "exec",
     "--model", "chatgpt-web/high",
     "--skip-git-repo-check",
@@ -203,7 +217,7 @@ try {
 
   assert(body.model === "chatgpt-web/high", `Expected chatgpt-web/high request, got ${JSON.stringify(body.model)}`);
   assert(Array.isArray(body.tools),
-    `Native Codex planner request has no tools array; precheck=${JSON.stringify({ tool_mode: debugHigh.tool_mode, featureSummary })}; request_keys=${JSON.stringify(Object.keys(body))}; stderr=${JSON.stringify(childStderr.slice(-5000))}`);
+    `Native Codex planner request has no tools array with code_mode enabled; precheck=${JSON.stringify({ tool_mode: debugHigh.tool_mode, baselineFeatures, enabledFeatures })}; tool_choice=${JSON.stringify(body.tool_choice)}; request_keys=${JSON.stringify(Object.keys(body))}; stderr=${JSON.stringify(childStderr.slice(-5000))}`);
   const tools = body.tools as unknown[];
   const names = tools.map(toolName).filter((name): name is string => Boolean(name));
   const exec = tools.find(tool => toolName(tool) === "exec") as Record<string, unknown> | undefined;
