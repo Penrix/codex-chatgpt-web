@@ -11,10 +11,17 @@ $Archive = Join-Path $Stage $Asset
 $Checksums = Join-Path $Stage "SHASUMS256.txt"
 $Extracted = Join-Path $Stage "extracted"
 
+function Download-ReleaseAsset([string]$Url, [string]$OutFile) {
+  & curl.exe -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 20 $Url -o $OutFile
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to download $Url after retries (curl exit $LASTEXITCODE)"
+  }
+}
+
 Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $Stage | Out-Null
-Invoke-WebRequest "$ReleaseBase/$Asset" -OutFile $Archive
-Invoke-WebRequest "$ReleaseBase/SHASUMS256.txt" -OutFile $Checksums
+Download-ReleaseAsset "$ReleaseBase/$Asset" $Archive
+Download-ReleaseAsset "$ReleaseBase/SHASUMS256.txt" $Checksums
 
 $ExpectedLine = Get-Content -LiteralPath $Checksums | Where-Object { $_ -match "  bun-windows-x64-baseline\.zip$" }
 if (@($ExpectedLine).Count -ne 1) { throw "Bun checksums did not contain exactly one $Asset entry" }
