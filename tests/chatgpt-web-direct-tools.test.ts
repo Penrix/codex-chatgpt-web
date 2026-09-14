@@ -56,6 +56,81 @@ describe("ChatGPT Web direct tool protocol", () => {
     expect(text).not.toContain("Codex Native2");
   });
 
+  test("compacts a large real-world tool catalog behind native exec discovery", () => {
+    const largeTools: CodexTool[] = [
+      {
+        name: "exec",
+        description: "Run JavaScript with access to native Codex tools through tools and ALL_TOOLS.",
+        parameters: {},
+        freeform: true,
+      },
+      {
+        name: "exec_command",
+        description: "Run a local command",
+        parameters: {
+          type: "object",
+          properties: { cmd: { type: "string" }, workdir: { type: "string" } },
+          required: ["cmd"],
+        },
+      },
+      {
+        name: "apply_patch",
+        description: "Apply a native patch",
+        parameters: {},
+        freeform: true,
+      },
+      ...Array.from({ length: 80 }, (_, index): CodexTool => ({
+        namespace: `mcp__plugin_${index}`,
+        name: "large_tool",
+        description: `Plugin tool ${index} ${"description ".repeat(80)}`,
+        parameters: {
+          type: "object",
+          properties: Object.fromEntries(Array.from({ length: 20 }, (__, prop) => [
+            `field_${prop}`,
+            { type: "string", description: `field ${prop} ${"schema ".repeat(40)}` },
+          ])),
+        },
+      })),
+    ];
+    const parsed: CodexParsedRequest = {
+      modelId: "gpt-5.6-sol",
+      stream: true,
+      context: { messages: [], tools: largeTools },
+      options: { toolChoice: "auto", parallelToolCalls: true },
+    };
+    const text = chatGptDirectToolProtocolLines(parsed).join("\n");
+    expect(text).toContain('"exec_gateway":true');
+    expect(text).toContain('"omitted_native_tools":80');
+    expect(text).toContain("ALL_TOOLS");
+    expect(text).toContain('"name":"exec_command"');
+    expect(text).not.toContain('mcp__plugin_79__large_tool');
+    expect(text.length).toBeLessThan(30_000);
+  });
+
+  test("keeps an explicitly selected non-core tool visible even with exec available", () => {
+    const selected: CodexTool = {
+      namespace: "mcp__github",
+      name: "search_code",
+      description: "Search code",
+      parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    };
+    const parsed: CodexParsedRequest = {
+      modelId: "gpt-5.6-sol",
+      stream: true,
+      context: {
+        messages: [],
+        tools: [
+          { name: "exec", description: "gateway", parameters: {}, freeform: true },
+          selected,
+        ],
+      },
+      options: { toolChoice: { name: "mcp__github__search_code" }, parallelToolCalls: true },
+    };
+    const text = chatGptDirectToolProtocolLines(parsed).join("\n");
+    expect(text).toContain('"name":"mcp__github__search_code"');
+    expect(text).not.toContain('"name":"exec"');
+  });
+
   test("parses a final envelope and tolerates one JSON fence", () => {
     expect(parseChatGptDirectToolOutcome(
       '```json\n{"kind":"final","content":"done"}\n```',
