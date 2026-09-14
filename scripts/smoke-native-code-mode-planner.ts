@@ -1,0 +1,195 @@
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { defaultConfig } from "../src/config";
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value.replace(/\\/g, "/"));
+}
+
+function nativeCatalog(codex: string): Record<string, unknown> {
+  const result = spawnSync(codex, ["debug", "models", "--bundled"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15_000,
+  });
+  if (result.status !== 0) {
+    throw new Error(`Codex bundled catalog discovery failed: ${result.error?.message || result.stderr || result.signal || `exit ${result.status}`}`);
+  }
+  const parsed = JSON.parse(result.stdout) as unknown;
+  assert(parsed && typeof parsed === "object" && !Array.isArray(parsed), "Codex bundled catalog is not an object");
+  return parsed as Record<string, unknown>;
+}
+
+function toolName(tool: unknown): string | undefined {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return undefined;
+  const name = (tool as { name?: unknown }).name;
+  return typeof name === "string" ? name : undefined;
+}
+
+function toolType(tool: unknown): string | undefined {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return undefined;
+  const type = (tool as { type?: unknown }).type;
+  return typeof type === "string" ? type : undefined;
+}
+
+function describeTools(tools: unknown[]): string {
+  return JSON.stringify(tools.map(tool => ({ type: toolType(tool), name: toolName(tool) })));
+}
+
+const codex = resolve(process.argv[2] ?? "codex");
+const root = mkdtempSync(join(tmpdir(), `codex-web-gpt-native-planner-${process.pid}-`));
+const codexHome = join(root, "codex-home");
+const workspace = join(root, "workspace");
+mkdirSync(codexHome, { recursive: true });
+mkdirSync(workspace, { recursive: true });
+writeFileSync(join(workspace, "README.md"), "# planner smoke\n\nNative Code Mode planner capture.\n");
+
+let capturedResolve!: (body: Record<string, unknown>) => void;
+let capturedReject!: (error: Error) => void;
+const captured = new Promise<Record<string, unknown>>((resolveCapture, rejectCapture) => {
+  capturedResolve = resolveCapture;
+  capturedReject = rejectCapture;
+});
+let captureSettled = false;
+
+const server = createServer((request, response) => {
+  if (request.method !== "POST" || !request.url?.endsWith("/responses")) {
+    response.statusCode = 404;
+    response.end("not found");
+    return;
+  }
+  const chunks: Buffer[] = [];
+  request.on("data", chunk => chunks.push(Buffer.from(chunk)));
+  request.on("error", error => {
+    if (!captureSettled) {
+      captureSettled = true;
+      capturedReject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+  request.on("end", () => {
+    try {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+      assert(body && typeof body === "object" && !Array.isArray(body), "Captured Responses body is not an object");
+      if (!captureSettled) {
+        captureSettled = true;
+        capturedResolve(body as Record<string, unknown>);
+      }
+      // This smoke only captures the native planner request. Return a deterministic terminal error
+      // and stop the child after capture rather than pretending a browser/model response exists.
+      response.statusCode = 418;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        error: {
+          type: "planner_capture_complete",
+          code: "planner_capture_complete",
+          message: "native planner request captured",
+        },
+      }));
+    } catch (error) {
+      if (!captureSettled) {
+        captureSettled = true;
+        capturedReject(error instanceof Error ? error : new Error(String(error)));
+      }
+      response.statusCode = 400;
+      response.end("invalid request");
+    }
+  });
+});
+
+try {
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => resolveListen());
+  });
+  const address = server.address();
+  assert(address && typeof address === "object", "Planner capture server has no TCP address");
+
+  const config = defaultConfig("browser-only");
+  config.solAvailable = true;
+  config.proAvailable = false;
+  config.subagentProtocol = "native";
+  const catalog = augmentNativeModelCatalog(nativeCatalog(codex), config);
+  const catalogPath = join(root, "model-catalog.json");
+  writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  writeFileSync(join(codexHome, "config.toml"), [
+    `model = "chatgpt-web/high"`,
+    `model_provider = "planner_capture"`,
+    `model_catalog_json = ${tomlString(catalogPath)}`,
+    "",
+    "[model_providers.planner_capture]",
+    `name = "Planner Capture"`,
+    `base_url = ${tomlString(baseUrl)}`,
+    `env_key = "CODEX_PLANNER_CAPTURE_KEY"`,
+    `wire_api = "responses"`,
+    "",
+  ].join("\n"));
+
+  const child = spawn(codex, [
+    "exec",
+    "--model", "chatgpt-web/high",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--color", "never",
+    "Inspect the current workspace and report the working directory.",
+  ], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      CODEX_PLANNER_CAPTURE_KEY: "planner-capture-key",
+      // Force this smoke onto the deterministic HTTP Responses transport even when another CI
+      // environment happens to carry OpenAI credentials.
+      OPENAI_API_KEY: "",
+      CODEX_API_KEY: "",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let childStdout = "";
+  let childStderr = "";
+  child.stdout?.on("data", chunk => { childStdout += String(chunk); });
+  child.stderr?.on("data", chunk => { childStderr += String(chunk); });
+
+  const timeout = new Promise<never>((_resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(
+      `Timed out waiting for native Codex planner request. stdout=${JSON.stringify(childStdout.slice(-2000))} stderr=${JSON.stringify(childStderr.slice(-4000))}`,
+    )), 20_000);
+    timer.unref?.();
+  });
+  const body = await Promise.race([captured, timeout]);
+  child.kill();
+
+  assert(body.model === "chatgpt-web/high", `Expected chatgpt-web/high request, got ${JSON.stringify(body.model)}`);
+  assert(Array.isArray(body.tools), `Native Codex planner request has no tools array: ${JSON.stringify(Object.keys(body))}`);
+  const tools = body.tools as unknown[];
+  const names = tools.map(toolName).filter((name): name is string => Boolean(name));
+  const exec = tools.find(tool => toolName(tool) === "exec") as Record<string, unknown> | undefined;
+  const wait = tools.find(tool => toolName(tool) === "wait") as Record<string, unknown> | undefined;
+  assert(exec, `Native CodeModeOnly planner did not advertise exec: ${describeTools(tools)}`);
+  assert(wait, `Native CodeModeOnly planner did not advertise wait: ${describeTools(tools)}`);
+  assert(toolType(exec) === "custom", `Native exec is not a custom/freeform tool: ${JSON.stringify(exec)}`);
+  assert(toolType(wait) === "function", `Native wait is not a function tool: ${JSON.stringify(wait)}`);
+  assert(typeof exec.description === "string" && exec.description.includes("Run JavaScript code to orchestrate/compose tool calls"),
+    "Native exec description does not contain the Code Mode contract");
+  assert(typeof exec.description === "string" && exec.description.includes("tools.exec_command"),
+    "Native exec description does not expose exec_command through the nested Codex tool registry");
+  for (const forbidden of ["exec_command", "write_stdin", "apply_patch", "shell_command"]) {
+    assert(!names.includes(forbidden), `Native CodeModeOnly planner leaked direct top-level ${forbidden}: ${describeTools(tools)}`);
+  }
+  assert(body.tool_choice === "auto", `Expected native Codex tool_choice=auto, got ${JSON.stringify(body.tool_choice)}`);
+  assert(body.parallel_tool_calls === true, `Expected native Codex parallel_tool_calls=true, got ${JSON.stringify(body.parallel_tool_calls)}`);
+
+  process.stdout.write(`NATIVE_CODE_MODE_PLANNER_SMOKE_OK tools=${describeTools(tools)}\n`);
+} finally {
+  await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+  rmSync(root, { recursive: true, force: true });
+}
