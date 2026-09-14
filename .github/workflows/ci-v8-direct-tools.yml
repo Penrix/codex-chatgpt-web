@@ -16,11 +16,6 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
-      - run: bun install --frozen-lockfile
-        working-directory: launcher
-      - name: Prepare AVX2-independent Windows runtime
-        shell: pwsh
-        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
       - name: Prepare official standalone Codex CLI 0.154.0
         shell: pwsh
         run: |
@@ -28,7 +23,7 @@ jobs:
           $expectedSha256 = "94cc5b3632769504c809f6c0364b693c0dfddc5c30c8361095d2263a07ac45a4"
           $archive = Join-Path $env:RUNNER_TEMP "codex-package-x86_64-pc-windows-msvc.tar.gz"
           $root = Join-Path $env:RUNNER_TEMP "codex-0.154.0"
-          curl.exe -fL --retry 3 --retry-delay 2 $url -o $archive
+          curl.exe -fL --retry 3 --retry-delay 2 --retry-all-errors $url -o $archive
           if ($LASTEXITCODE -ne 0) { throw "Failed to download official Codex CLI 0.154.0 package" }
           $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           if ($actualSha256 -ne $expectedSha256) {
@@ -59,6 +54,11 @@ jobs:
       - name: Test existing standalone catalog and tunnel boundaries
         shell: pwsh
         run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts tests/tunnel.test.ts
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
       - name: Verify committed direct tool source boundaries
         shell: pwsh
         run: |
