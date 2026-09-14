@@ -65,6 +65,76 @@ jobs:
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
 
+  standalone-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Prepare official standalone Codex CLI 0.154.0
+        shell: pwsh
+        run: |
+          $url = "https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-package-x86_64-pc-windows-msvc.tar.gz"
+          $expectedSha256 = "94cc5b3632769504c809f6c0364b693c0dfddc5c30c8361095d2263a07ac45a4"
+          $archive = Join-Path $env:RUNNER_TEMP "codex-package-x86_64-pc-windows-msvc.tar.gz"
+          $root = Join-Path $env:RUNNER_TEMP "codex-0.154.0"
+
+          curl.exe -fL --retry 3 --retry-delay 2 $url -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download official Codex CLI 0.154.0 package" }
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Codex CLI archive checksum mismatch: expected $expectedSha256, got $actualSha256"
+          }
+
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          tar.exe -xzf $archive -C $root
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract official Codex CLI package" }
+          $codex = Join-Path $root "bin\codex.exe"
+          if (-not (Test-Path -LiteralPath $codex -PathType Leaf)) {
+            throw "Official Codex package did not contain bin\codex.exe"
+          }
+          $version = (& $codex --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '0\.154\.0') {
+            throw "Expected Codex CLI 0.154.0, got: $version"
+          }
+          "CODEX_SMOKE_CLI=$codex" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using $version from $codex"
+      - name: Verify Codex Web GPT model catalog against official CLI
+        shell: pwsh
+        run: bun run scripts/smoke-codex-catalog.ts "$env:CODEX_SMOKE_CLI"
+      - name: Test standalone CLI discovery and static catalog
+        shell: pwsh
+        run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts
+      - name: Build Windows installer
+        shell: pwsh
+        run: bun run --cwd launcher package:win
+      - name: Record installer SHA-256
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath launcher/artifacts -Filter *.exe -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one Windows installer, found $($installers.Count)"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 $installers[0].FullName).Hash.ToLowerInvariant()
+          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-standalone-v6.txt
+          Write-Host "Installer: $($installers[0].FullName)"
+          Write-Host "SHA256: $hash"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-5.0.6-standalone-cli-windows-x64
+          path: |
+            launcher/artifacts/*.exe
+            launcher/artifacts/SHA256SUMS-standalone-v6.txt
+          if-no-files-found: error
+          retention-days: 14
+
   actionlint:
     runs-on: ubuntu-latest
     steps:
