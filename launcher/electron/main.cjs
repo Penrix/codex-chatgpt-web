@@ -23,6 +23,7 @@ const {
   exportSanitizedLogs,
   installProcessDiagnosticGuards,
   registerLoggedIpc,
+  sanitizeForExport,
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
@@ -91,6 +92,79 @@ let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
+
+function coreSetupStateSnapshot(state) {
+  return {
+    coreSetupComplete: state.coreSetupComplete === true,
+    codexCatalogVerified: state.codexCatalogVerified === true,
+    codexRestartRequired: state.codexRestartRequired === true,
+    browserInteractionMode: state.browserInteractionMode,
+    mcpRuntimeInstalled: state.mcpRuntimeInstalled === true,
+    mcpSetupComplete: state.mcpSetupComplete === true,
+  };
+}
+
+async function collectCoreSetupDiagnostic({ stage, stateStore, error = null }) {
+  let route;
+  try {
+    route = await runtimeHost.bridgeStatusDiagnostic(`core-setup-diagnostic-${stage}`);
+  } catch (caught) {
+    route = { diagnosticError: caught instanceof Error ? caught.message : String(caught) };
+  }
+  let runtime;
+  try {
+    const current = runtimeHost.runtimeConfigSnapshot();
+    runtime = {
+      configured: current.configured === true,
+      owner: current.owner,
+      mode: current.mode,
+      releaseVersion: current.config?.releaseVersion ?? null,
+      browserInteractionMode: current.config?.browserInteractionMode ?? null,
+      subagentProtocol: current.config?.subagentProtocol ?? null,
+    };
+  } catch (caught) {
+    runtime = { diagnosticError: caught instanceof Error ? caught.message : String(caught) };
+  }
+  let browser;
+  try {
+    const current = browserHost.snapshot();
+    browser = {
+      authenticated: current.authenticated === true,
+      status: current.status,
+      url: current.url,
+    };
+  } catch (caught) {
+    browser = { diagnosticError: caught instanceof Error ? caught.message : String(caught) };
+  }
+  return {
+    schemaVersion: 1,
+    at: new Date().toISOString(),
+    stage,
+    launcherVersion: app.getVersion(),
+    platform: process.platform,
+    codexHome: process.env.CODEX_HOME || null,
+    state: coreSetupStateSnapshot(stateStore.read()),
+    route,
+    runtime,
+    browser,
+    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+  };
+}
+
+function writeCoreSetupDiagnostic(payload, logger) {
+  try {
+    const destinationPath = path.join(app.getPath("desktop"), "codex-web-gpt-setup-diagnostic-latest.json");
+    fs.writeFileSync(destinationPath, `${JSON.stringify(sanitizeForExport(payload), null, 2)}\n`, { mode: 0o600 });
+    logger.info("codex.setup_diagnostic_saved", { stage: payload.stage, destinationPath });
+    return destinationPath;
+  } catch (error) {
+    logger.warn("codex.setup_diagnostic_save_failed", {
+      stage: payload.stage,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -673,49 +747,80 @@ function registerIpc({ logger, stateStore }) {
     return { cancelled: false, state };
   });
   handle("launcher:setup-core", async () => {
+    const attemptId = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
     const setupState = stateStore.read();
-    if (setupState.browserInteractionMode === "automatic") {
-      const browser = await browserHost.probeAuthentication();
-      if (!browser.authenticated) {
+    logger.info("codex.setup_attempt_started", {
+      attemptId,
+      state: coreSetupStateSnapshot(setupState),
+    });
+    if (!IS_DEV_PROFILE) {
+      const before = await collectCoreSetupDiagnostic({ stage: "before", stateStore });
+      writeCoreSetupDiagnostic({ ...before, attemptId }, logger);
+      logger.info("codex.setup_state_before", { attemptId, diagnostic: before });
+    }
+    try {
+      if (setupState.browserInteractionMode === "automatic") {
+        const browser = await browserHost.probeAuthentication();
+        if (!browser.authenticated) {
+          throw new Error(
+            IS_DEV_PROFILE
+              ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
+              : "Sign in to ChatGPT before installing the Codex integration",
+          );
+        }
+      }
+      if (setupState.browserInteractionMode === "automatic"
+        && !setupState.coreSetupComplete
+        && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
         throw new Error(
           IS_DEV_PROFILE
-            ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
-            : "Sign in to ChatGPT before installing the Codex integration",
+            ? "Run the browser smoke test before configuring the DEV harness"
+            : "Run the browser smoke test before installing the Codex integration",
         );
       }
-    }
-    if (setupState.browserInteractionMode === "automatic"
-      && !setupState.coreSetupComplete
-      && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
-      throw new Error(
-        IS_DEV_PROFILE
-          ? "Run the browser smoke test before configuring the DEV harness"
-          : "Run the browser smoke test before installing the Codex integration",
-      );
-    }
-    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
-    stateStore.update({
-      coreSetupComplete: true,
-      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
-      zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
-      ...(result.mode === "full" ? {
-        mcpRuntimeInstalled: true,
-        mcpSetupComplete: false,
-        mcpGuideStep: 2,
-      } : {
-        mcpSetupComplete: false,
-        mcpRuntimeInstalled: false,
-        mcpGuideStep: 0,
-      }),
-    });
-    await browserHost.returnToIdle().catch((error) => {
-      logger.warn("browser.idle_cleanup_failed", {
-        message: error instanceof Error ? error.message : String(error),
+      const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+      const catalogVerified = IS_DEV_PROFILE || result.catalogVerified === true;
+      const state = stateStore.update({
+        coreSetupComplete: true,
+        codexCatalogVerified: catalogVerified,
+        codexRestartRequired: IS_DEV_PROFILE ? false : true,
+        zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
+        ...(result.mode === "full" ? {
+          mcpRuntimeInstalled: true,
+          mcpSetupComplete: false,
+          mcpGuideStep: 2,
+        } : {
+          mcpSetupComplete: false,
+          mcpRuntimeInstalled: false,
+          mcpGuideStep: 0,
+        }),
       });
-    });
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+      send("launcher:state-changed", state);
+      await browserHost.returnToIdle().catch((error) => {
+        logger.warn("browser.idle_cleanup_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+      if (!IS_DEV_PROFILE && !catalogVerified) startCatalogVerificationMonitor({ logger, stateStore });
+      else stopCatalogVerificationMonitor();
+      if (!IS_DEV_PROFILE) {
+        const after = await collectCoreSetupDiagnostic({ stage: "success", stateStore });
+        writeCoreSetupDiagnostic({ ...after, attemptId }, logger);
+        logger.info("codex.setup_attempt_completed", { attemptId, diagnostic: after });
+      }
+      return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    } catch (error) {
+      if (!IS_DEV_PROFILE) {
+        const failed = await collectCoreSetupDiagnostic({ stage: "failure", stateStore, error });
+        const diagnosticPath = writeCoreSetupDiagnostic({ ...failed, attemptId }, logger);
+        logger.error("codex.setup_attempt_failed", { attemptId, diagnostic: failed, diagnosticPath });
+        const primary = error instanceof Error ? error.message : String(error);
+        throw new Error(diagnosticPath
+          ? `${primary}; detailed diagnostic saved to ${diagnosticPath}`
+          : primary);
+      }
+      throw error;
+    }
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const currentMode = stateStore.read().browserInteractionMode;

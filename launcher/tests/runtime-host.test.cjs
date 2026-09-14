@@ -29,6 +29,12 @@ function hostFor(existingConfig, interactionMode = "automatic") {
     await options.afterRuntimeReady?.();
     return { code: 0, stdout: "", stderr: "" };
   };
+  host.bridgeStatus = async () => ({
+    installed: true,
+    active: true,
+    staticCatalogActive: true,
+    errors: [],
+  });
   return { host, invocation: () => invocation };
 }
 
@@ -618,6 +624,29 @@ test("Windows startup repairs an active v10 route that is missing the managed st
   assert.equal(result.active, true);
   assert.equal(staticCatalogActive, true);
   assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
+});
+
+test("Windows core setup fails closed when the managed model catalog is not active", async () => {
+  const calls = [];
+  const host = Object.create(RuntimeHost.prototype);
+  host.platform = "win32";
+  host.launcherProfile = "production";
+  host.currentOperation = () => null;
+  host.runtimeConfigSnapshot = () => ({ configured: true, owner: "launcher", mode: "browser-only", config: {} });
+  host.browserInteractionMode = () => "automatic";
+  host.browserDescriptorPath = "C:\\temp\\launcher-browser.json";
+  host.runSetup = async (_name, _args, options) => {
+    calls.push("runSetup");
+    await options.afterRuntimeReady();
+    return { stdout: "ok" };
+  };
+  host.bridgeStatus = async () => ({ installed: true, active: true, staticCatalogActive: false, errors: [] });
+
+  await assert.rejects(
+    RuntimeHost.prototype.setupCore.call(host),
+    /managed Windows model catalog is not active/,
+  );
+  assert.deepEqual(calls, ["runSetup"]);
 });
 
 test("launcher leaves an already connected route unchanged", async () => {
