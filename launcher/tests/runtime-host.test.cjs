@@ -29,6 +29,12 @@ function hostFor(existingConfig, interactionMode = "automatic") {
     await options.afterRuntimeReady?.();
     return { code: 0, stdout: "", stderr: "" };
   };
+  host.bridgeStatus = async () => ({
+    installed: true,
+    active: true,
+    staticCatalogActive: true,
+    errors: [],
+  });
   return { host, invocation: () => invocation };
 }
 
@@ -543,7 +549,7 @@ test("mutating launcher operations are serialized before lifecycle changes begin
   assert.equal(fixture.invocation(), undefined);
 });
 
-function bridgeFixture({ active }) {
+function bridgeFixture({ active, staticCatalogActive = false }) {
   const calls = [];
   let routeActive = active;
   const supervisor = {
@@ -569,7 +575,7 @@ function bridgeFixture({ active }) {
     const action = args.join(" ");
     calls.push(action);
     if (action === "route status") {
-      return { stdout: JSON.stringify({ installed: true, active: routeActive, errors: [] }) };
+      return { stdout: JSON.stringify({ installed: true, active: routeActive, staticCatalogActive, errors: [] }) };
     }
     if (action === "route connect") {
       routeActive = true;
@@ -591,8 +597,60 @@ test("launcher connects an inactive installed route", async () => {
   assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
 });
 
-test("launcher leaves an already connected route unchanged", async () => {
+
+test("Windows startup repairs an active v10 route that is missing the managed static catalog", async () => {
   const fixture = bridgeFixture({ active: true });
+  fixture.host.platform = "win32";
+  let staticCatalogActive = false;
+  fixture.host.bridgeStatus = async () => {
+    fixture.calls.push("route status");
+    return {
+      installed: true,
+      active: true,
+      staticCatalogActive,
+      errors: [],
+    };
+  };
+  fixture.host.run = async (_name, args) => {
+    const action = args.join(" ");
+    fixture.calls.push(action);
+    if (action !== "route connect") throw new Error(`Unexpected route action: ${action}`);
+    staticCatalogActive = true;
+    return { stdout: JSON.stringify({ changed: true, active: true }) };
+  };
+
+  const result = await fixture.host.connectBridgeRoute();
+
+  assert.equal(result.active, true);
+  assert.equal(staticCatalogActive, true);
+  assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
+});
+
+test("Windows core setup fails closed when the managed model catalog is not active", async () => {
+  const calls = [];
+  const host = Object.create(RuntimeHost.prototype);
+  host.platform = "win32";
+  host.launcherProfile = "production";
+  host.currentOperation = () => null;
+  host.runtimeConfigSnapshot = () => ({ configured: true, owner: "launcher", mode: "browser-only", config: {} });
+  host.browserInteractionMode = () => "automatic";
+  host.browserDescriptorPath = "C:\\temp\\launcher-browser.json";
+  host.runSetup = async (_name, _args, options) => {
+    calls.push("runSetup");
+    await options.afterRuntimeReady();
+    return { stdout: "ok" };
+  };
+  host.bridgeStatus = async () => ({ installed: true, active: true, staticCatalogActive: false, errors: [] });
+
+  await assert.rejects(
+    RuntimeHost.prototype.setupCore.call(host),
+    /managed Windows model catalog is not active/,
+  );
+  assert.deepEqual(calls, ["runSetup"]);
+});
+
+test("launcher leaves an already connected route unchanged", async () => {
+  const fixture = bridgeFixture({ active: true, staticCatalogActive: true });
   const result = await fixture.host.connectBridgeRoute();
   assert.equal(result.active, true);
   assert.deepEqual(fixture.calls, ["route status"]);

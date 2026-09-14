@@ -826,6 +826,29 @@ class RuntimeHost {
     };
   }
 
+  async bridgeStatusDiagnostic(operationName = "bridge-status-diagnostic") {
+    this.assertProductionProfile("Codex bridge diagnostics");
+    const result = await this.run(operationName, ["route", "status"], {
+      embedded: true,
+      message: "Inspecting Codex bridge route",
+      successMessage: "Codex bridge route inspected",
+      timeoutMs: 15_000,
+      acceptedExitCodes: [0, 1],
+    });
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return {
+        commandExitCode: result.code,
+        parseError: "Codex bridge route command returned invalid JSON",
+        stdoutChars: result.stdout.length,
+        stderr: result.stderr.trim(),
+      };
+    }
+    return { commandExitCode: result.code, ...parsed };
+  }
+
   async bridgeStatus(operationName = "bridge-status") {
     this.assertProductionProfile("Codex bridge status");
     const result = await this.run(operationName, ["route", "status"], {
@@ -875,7 +898,8 @@ class RuntimeHost {
     try {
       const current = await this.bridgeStatus(name);
       if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");
-      if (current.active) return current;
+      const staticCatalogReady = this.platform !== "win32" || current.staticCatalogActive === true;
+      if (current.active && staticCatalogReady) return current;
       try {
         const connected = await this.run(name, ["route", "connect"], {
           embedded: true,
@@ -1016,8 +1040,19 @@ class RuntimeHost {
       message: "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
+      afterRuntimeReady: async () => {
+        const route = await this.bridgeStatus("core-setup");
+        if (!route.installed || !route.active) {
+          throw new Error("Codex integration setup completed but the bridge route is not active");
+        }
+        if (this.platform === "win32" && route.staticCatalogActive !== true) {
+          throw new Error(
+            "Codex integration setup completed but the managed Windows model catalog is not active",
+          );
+        }
+      },
     });
-    return { ...result, mode };
+    return { ...result, mode, catalogVerified: this.platform === "win32" };
   }
 
   async setupDevCore() {

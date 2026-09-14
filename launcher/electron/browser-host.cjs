@@ -1148,13 +1148,17 @@ class BrowserHost {
   }
 
   async refreshChatGptHomeDocument() {
-    // A navigation from the idle host already creates a fresh ChatGPT document. Reload only an
-    // existing Temporary Chat document so the helper observes one authoritative SPA bootstrap.
-    if (isTemporaryChatUrl(this.view.webContents.getURL())) {
-      await this.hardRefreshHome();
-    } else {
-      await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+    const contents = this.view.webContents;
+    // Electron can surface a failed same-URL reload on Windows even though the existing Temporary
+    // Chat document is otherwise healthy. Reset through our local idle document instead, then
+    // create exactly one fresh ChatGPT document for connector/session verification.
+    if (isTemporaryChatUrl(contents.getURL())) {
+      await loadCommittedBrowserSurface(contents, IDLE_BROWSER_URL, BROWSER_NAVIGATION_TIMEOUT_MS);
     }
+    await contents.loadURL(TEMPORARY_CHAT_URL);
+    // did-finish-load also marks the surface asynchronously. Await the mark here so the connector
+    // verifier never races the ownership contract on this explicit setup refresh.
+    await this.markOwnedSurface();
     await this.waitForAuthenticated(60_000);
   }
 
