@@ -78,7 +78,9 @@ let preparedPrompt = "";
   const answer = JSON.stringify({
     kind: "tool_calls",
     tool_calls: [{
-      id: "call_readme",
+      // Browser ids are deliberately untrusted. The adapter must replace this with a stable
+      // round-derived native call id before handing execution back to Codex.
+      id: "browser_supplied_call_readme",
       name: "read_file",
       arguments: { path: "README.md" },
     }],
@@ -101,8 +103,11 @@ try {
   const delta = events.find(event => event.type === "tool_call_delta");
   const end = events.find(event => event.type === "tool_call_end");
   const done = events.at(-1);
-  assert(start?.type === "tool_call_start" && start.id === "call_readme" && start.name === "read_file",
-    `Adapter did not emit the native tool_call_start: ${JSON.stringify(events)}`);
+  assert(start?.type === "tool_call_start"
+      && /^call_web_[a-f0-9]{24}$/.test(start.id)
+      && start.id !== "browser_supplied_call_readme"
+      && start.name === "read_file",
+    `Adapter did not emit a canonical native tool_call_start: ${JSON.stringify(events)}`);
   assert(delta?.type === "tool_call_delta" && delta.arguments.includes("README.md"),
     `Adapter did not emit native tool arguments: ${JSON.stringify(events)}`);
   assert(end?.type === "tool_call_end",
