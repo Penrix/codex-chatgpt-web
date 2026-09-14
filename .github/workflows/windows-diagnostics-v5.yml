@@ -24,7 +24,9 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: launcher
       - name: Apply diagnostics v5 patch
-        run: python .github/scripts/apply-windows-diagnostics-v5.py
+        run: |
+          python .github/scripts/apply-windows-diagnostics-v5.py
+          python .github/scripts/patch-v5-runtime-host-fixture.py
       - name: Prepare AVX2-independent Windows runtime
         shell: pwsh
         run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
@@ -40,7 +42,7 @@ jobs:
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+Penrix@users.noreply.github.com"
           git add launcher/electron/main.cjs launcher/electron/runtime.cjs launcher/tests/runtime-host.test.cjs
           git diff --cached --check
           git commit -m "fix: fail closed and capture Windows setup diagnostics"
