@@ -21,6 +21,9 @@ jobs:
       - name: Apply V8 direct Web tools hotfix
         shell: pwsh
         run: node scripts/apply-v8-direct-tools-hotfix.cjs
+      - name: Apply V8 direct Web tools import fix
+        shell: pwsh
+        run: node scripts/apply-v8-direct-tools-import-fix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -71,6 +74,7 @@ jobs:
           if (-not $adapter.Contains('parseChatGptDirectToolOutcome(rawAnswer, parsed, roundKey)')) { throw "Direct response parser missing" }
           if (-not $adapter.Contains('`${executionNamespace}:direct:${roundKey}`')) { throw "Round-local replay identity missing" }
           if (-not $adapter.Contains('capabilities: browserCapabilities')) { throw "Direct browser capability isolation missing" }
+          if (-not $adapter.Contains('CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID')) { throw "Sol model id import missing" }
           if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
           Write-Host "V8_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
       - name: Verify V7 route status and stale-journal repair
