@@ -44,6 +44,23 @@ function describeTools(tools: unknown[]): string {
   return JSON.stringify(tools.map(tool => ({ type: toolType(tool), name: toolName(tool) })));
 }
 
+function terminalSse(): string {
+  const events = [
+    { type: "response.created", response: { id: "planner-capture" } },
+    {
+      type: "response.output_item.done",
+      item: {
+        type: "message",
+        role: "assistant",
+        id: "planner-capture-message",
+        content: [{ type: "output_text", text: "planner capture complete" }],
+      },
+    },
+    { type: "response.completed", response: { id: "planner-capture" } },
+  ];
+  return `${events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
 const codex = resolve(process.argv[2] ?? "codex");
 const root = mkdtempSync(join(tmpdir(), `codex-web-gpt-native-planner-${process.pid}-`));
 const codexHome = join(root, "codex-home");
@@ -82,17 +99,13 @@ const server = createServer((request, response) => {
         captureSettled = true;
         capturedResolve(body as Record<string, unknown>);
       }
-      // This smoke only captures the native planner request. Return a deterministic terminal error
-      // and stop the child after capture rather than pretending a browser/model response exists.
-      response.statusCode = 418;
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({
-        error: {
-          type: "planner_capture_complete",
-          code: "planner_capture_complete",
-          message: "native planner request captured",
-        },
-      }));
+      // Give native Codex a valid terminal model response so it can close its Code Mode session and
+      // owned codex-code-mode-host process normally. Killing only codex.exe on Windows can leave the
+      // host alive and keep CODEX_HOME locked, which turns a passing planner assertion into EBUSY.
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/event-stream; charset=utf-8");
+      response.setHeader("cache-control", "no-cache");
+      response.end(terminalSse());
     } catch (error) {
       if (!captureSettled) {
         captureSettled = true;
@@ -147,8 +160,6 @@ try {
       ...process.env,
       CODEX_HOME: codexHome,
       CODEX_PLANNER_CAPTURE_KEY: "planner-capture-key",
-      // Force this smoke onto the deterministic HTTP Responses transport even when another CI
-      // environment happens to carry OpenAI credentials.
       OPENAI_API_KEY: "",
       CODEX_API_KEY: "",
     },
@@ -158,6 +169,10 @@ try {
   let childStderr = "";
   child.stdout?.on("data", chunk => { childStdout += String(chunk); });
   child.stderr?.on("data", chunk => { childStderr += String(chunk); });
+  const childExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, rejectExit) => {
+    child.once("error", rejectExit);
+    child.once("exit", (code, signal) => resolveExit({ code, signal }));
+  });
 
   const timeout = new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(
@@ -166,7 +181,6 @@ try {
     timer.unref?.();
   });
   const body = await Promise.race([captured, timeout]);
-  child.kill();
 
   assert(body.model === "chatgpt-web/high", `Expected chatgpt-web/high request, got ${JSON.stringify(body.model)}`);
   assert(Array.isArray(body.tools), `Native Codex planner request has no tools array: ${JSON.stringify(Object.keys(body))}`);
@@ -188,11 +202,16 @@ try {
   assert(body.tool_choice === "auto", `Expected native Codex tool_choice=auto, got ${JSON.stringify(body.tool_choice)}`);
   assert(body.parallel_tool_calls === true, `Expected native Codex parallel_tool_calls=true, got ${JSON.stringify(body.parallel_tool_calls)}`);
 
+  const exit = await Promise.race([childExit, timeout]);
+  assert(exit.code === 0, `Native Codex planner smoke exited ${exit.code ?? exit.signal}: stdout=${JSON.stringify(childStdout)} stderr=${JSON.stringify(childStderr)}`);
   process.stdout.write(`NATIVE_CODE_MODE_PLANNER_SMOKE_OK tools=${describeTools(tools)}\n`);
 } finally {
   await new Promise<void>(resolveClose => server.close(() => resolveClose()));
-  // Windows may keep CODEX_HOME files briefly locked while the killed Codex child tears down its
-  // code-mode/session resources. Retrying cleanup must not turn a successful planner assertion into
-  // a false CI failure.
-  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (error) {
+    // GitHub's Windows runner is ephemeral. Cleanup must never override the planner result after the
+    // child has exited; retain the directory for runner teardown if an external scanner still holds it.
+    process.stderr.write(`planner cleanup warning: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
