@@ -1,3 +1,4 @@
+import { loadBundledWindowsCodexCatalog } from "./codex-bundled-catalog";
 import { readJsonRequestBody } from "./http-body";
 import {
   BRIDGE_COMPACTION_PREFIX,
@@ -29,6 +30,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 export type NativeFetch = (request: Request) => Promise<Response>;
 export type NativeImageEndpoint = "images/generations" | "images/edits";
 export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search" | NativeImageEndpoint;
+export type NativeModelsFallback = () => unknown | Promise<unknown>;
 
 type JsonObject = Record<string, unknown>;
 type BridgeCompactionItem = JsonObject & { type: "compaction"; encrypted_content: string };
@@ -136,6 +138,32 @@ function endToEndHeaders(source: Headers): Headers {
   return headers;
 }
 
+function missingNativeAuthorizationResponse(): Response {
+  return Response.json({
+    error: {
+      type: "authentication_error",
+      code: "missing_authorization",
+      message: "Native Codex passthrough requires incoming Bearer authorization",
+    },
+  }, { status: 401 });
+}
+
+async function bundledModelsFallbackResponse(
+  fallback: NativeModelsFallback,
+  cause: "transport" | "upstream_error",
+): Promise<Response | undefined> {
+  try {
+    const catalog = await fallback();
+    if (!isObject(catalog) || !Array.isArray(catalog.models) || catalog.models.length === 0) return undefined;
+    console.warn(`[codex-chatgpt-web] native_models_bundled_fallback cause=${cause}`);
+    return Response.json(catalog, {
+      headers: { "x-codex-chatgpt-web-catalog-source": "windows-bundled-fallback" },
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 /** Terminator every Responses SSE stream ends with; nothing after it carries meaning. */
 const SSE_TERMINATOR = "data: [DONE]";
 
@@ -209,9 +237,11 @@ export async function forwardNativeCodexRequest(
   endpoint: NativeCodexEndpoint,
   fetchUpstream: NativeFetch = fetch,
   decodedBody?: unknown,
+  modelsFallback: NativeModelsFallback = loadBundledWindowsCodexCatalog,
 ): Promise<Response> {
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
+    if (endpoint === "models") return missingNativeAuthorizationResponse();
     throw new Error("Native Codex passthrough requires the incoming Bearer authorization");
   }
 
@@ -258,7 +288,27 @@ export async function forwardNativeCodexRequest(
     // forwarding account headers to a redirect destination.
     redirect: imageRequest ? "manual" : "follow",
   });
-  const upstream = await fetchUpstream(upstreamRequest);
+  let upstream: Response;
+  try {
+    upstream = await fetchUpstream(upstreamRequest);
+  } catch (error) {
+    if (endpoint === "models") {
+      const fallback = await bundledModelsFallbackResponse(modelsFallback, "transport");
+      if (fallback) return fallback;
+    }
+    throw error;
+  }
+  const recoverableCatalogError = endpoint === "models"
+    && upstream.status >= 400
+    && upstream.status !== 401
+    && upstream.status !== 403;
+  if (recoverableCatalogError) {
+    const fallback = await bundledModelsFallbackResponse(modelsFallback, "upstream_error");
+    if (fallback) {
+      if (upstream.body) await upstream.body.cancel().catch(() => {});
+      return fallback;
+    }
+  }
   if (compactionRequest && !upstream.ok) {
     console.warn(`[codex-chatgpt-web] native_compaction_upstream_failed ${JSON.stringify({
       endpoint, model, status: upstream.status,

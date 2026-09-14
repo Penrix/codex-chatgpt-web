@@ -293,8 +293,10 @@ export interface CodexProviderConfig {
     stallTimeoutSec?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
-    /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */
+    /** Attach the turn-bound Codex MCP capability for connector-backed Web models. */
     localToolsEnabled?: boolean;
+    /** Let automatic Sol/High return strict tool envelopes to the native Codex Responses harness. */
+    directToolsEnabled?: boolean;
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */

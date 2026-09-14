@@ -2,6 +2,8 @@ import type { AppConfig } from "./config";
 import type { CodexModelContextOverride } from "./codex-integration";
 import {
   availableChatGptWebModelRoutes,
+  CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
   CHATGPT_WEB_MODEL_PREFIX,
   resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
@@ -57,29 +59,64 @@ function routedModelPriority(
   return priority + 1;
 }
 
-function nativeTemplateCandidate(value: unknown, requireTools: boolean): value is JsonObject {
+function nativeTemplateCandidate(
+  value: unknown,
+  requireTools: boolean,
+  requireListVisibility: boolean,
+): value is JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const model = value as JsonObject;
   const modelSlug = slug(model);
   if (!modelSlug || modelSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX)) return false;
-  // This route forwards ChatGPT authentication. Codex's own model manager keeps every list-visible
-  // model in ChatGPT mode even when `supported_in_api` is false; that flag gates API-key mode, not
-  // whether the backend row is a valid catalog template. The routed Web row overrides the flag to
-  // true because this local Responses endpoint implements it.
-  if (model.visibility !== "list") return false;
+  // Exact routed backends may be hidden from Codex's ordinary picker (Luna is one such row) while
+  // still carrying the authoritative instructions and tool metadata for that backend. Visibility is
+  // therefore a fallback-selection rule, not a prerequisite for an exact backend template.
+  if (requireListVisibility && model.visibility !== "list") return false;
   if (!Array.isArray(model.supported_reasoning_levels)) return false;
   return !requireTools || (typeof model.tool_mode === "string" && model.tool_mode.length > 0);
 }
 
-function selectNativeTemplate(models: unknown[], config: AppConfig): JsonObject {
-  const requireTools = config.mode === "full";
-  const candidates = models.filter(model => nativeTemplateCandidate(model, requireTools)) as JsonObject[];
-  const template = candidates[0];
-  if (template) return template;
+function preferredNativeTemplateSlug(route: ChatGptWebModelRoute): string {
+  if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return CHATGPT_WEB_LUNA_BACKEND_MODEL;
+  // Automatic Sol routes and Manual / Zero Risk both use Sol as the native Codex harness model.
+  // Zero Risk chooses the visible ChatGPT model manually, so its internal backend id has no native
+  // catalog row of its own.
+  return CHATGPT_WEB_BACKEND_MODEL;
+}
+
+function routeRequiresToolCapableTemplate(route: ChatGptWebModelRoute, config: AppConfig): boolean {
+  // Automatic Sol hands browser-selected calls back to native Codex. Preserve the official Sol
+  // CodeModeOnly surface even in browser-only mode. Full mode also needs a tool-capable fallback for
+  // the explicit Manual / Zero Risk connector path.
+  return (route.interactionMode === "automatic" && route.backendModel === CHATGPT_WEB_BACKEND_MODEL)
+    || config.mode === "full";
+}
+
+function selectNativeTemplate(
+  models: unknown[],
+  route: ChatGptWebModelRoute,
+  config: AppConfig,
+): JsonObject {
+  const requireTools = routeRequiresToolCapableTemplate(route, config);
+  const preferredSlug = preferredNativeTemplateSlug(route);
+  const exact = models.find(model => (
+    slug(model) === preferredSlug
+    && nativeTemplateCandidate(model, requireTools, /*requireListVisibility*/ false)
+  )) as JsonObject | undefined;
+  if (exact) return exact;
+
+  // Smaller or older Codex catalogs may not contain the preferred backend. Preserve the previous
+  // compatibility behavior only as an explicit fallback: choose the first list-visible compatible
+  // native model rather than silently treating catalog order as the primary semantic mapping.
+  const fallback = models.find(model => (
+    nativeTemplateCandidate(model, requireTools, /*requireListVisibility*/ true)
+  )) as JsonObject | undefined;
+  if (fallback) return fallback;
+
   throw new Error(
     requireTools
-      ? "Native Codex models response has no list-visible, tool-capable model with reasoning metadata"
-      : "Native Codex models response has no list-visible model with reasoning metadata",
+      ? `Native Codex models response has no ${preferredSlug} row and no list-visible, tool-capable fallback with reasoning metadata`
+      : `Native Codex models response has no ${preferredSlug} row and no list-visible fallback with reasoning metadata`,
   );
 }
 
@@ -92,6 +129,22 @@ function useCompatibilityV1SubagentSurface(model: JsonObject): void {
 function routedSubagentVersion(template: JsonObject, config: AppConfig): string | undefined {
   if (config.subagentProtocol === "compatibility-v1") return "v1";
   return typeof template.multi_agent_version === "string" ? template.multi_agent_version : undefined;
+}
+
+function routedToolMode(
+  template: JsonObject,
+  route: ChatGptWebModelRoute,
+): string | null {
+  if (route.interactionMode !== "automatic" || route.backendModel !== CHATGPT_WEB_BACKEND_MODEL) {
+    // Luna keeps its existing checkpoint/read-only behavior, and Manual / Zero Risk keeps the
+    // explicit connector protocol. Only Automatic Sol currently owns the direct Responses loop.
+    return null;
+  }
+  const mode = template.tool_mode;
+  if (typeof mode !== "string" || mode.length === 0) {
+    throw new Error("Automatic Sol Web route requires a native Codex tool_mode");
+  }
+  return mode;
 }
 
 export function buildChatGptWebModel(
@@ -121,15 +174,16 @@ export function buildChatGptWebModel(
     // spawn-agent overrides; forcing every routed row to priority 0 displaced gpt-5.6-sol from that
     // registry and made an explicit native child model fail validation.
     ...(priority === undefined ? {} : { priority }),
-    // In native mode the routed row follows the official template's protocol surface. Web-origin
+    // In native mode the routed row follows the exact backend template's protocol surface. Web-origin
     // V2 collaboration calls carry the protocol's explicit plaintext marker; Compatibility V1
     // instead pins the entire catalog and Codex feature override to V1.
     ...(multiAgentVersion === undefined
       ? {}
       : { multi_agent_version: multiAgentVersion }),
-    // Code mode collapses the outer registry into an exec gateway; routed models need the regular
-    // Responses tool surface so MCP namespaces, deferred tool_search, and custom tools reach us.
-    tool_mode: null,
+    // Automatic Sol must keep the official CodeModeOnly surface. It is the native Codex planner
+    // that reduces shell/files/MCP/plugins to exec/wait + direct-only tools while preserving the
+    // real sandbox and approval dispatcher. Other routes retain their existing transport contract.
+    tool_mode: routedToolMode(template, route),
     upgrade: null,
     default_reasoning_level: route.codexEffort,
     supported_reasoning_levels: [reasoningLevel(template, route.codexEffort, route.displayName)],
@@ -169,7 +223,6 @@ export function augmentNativeModelCatalog(
       }
     }
   }
-  const template = selectNativeTemplate(nativeModels, config);
   if (contextOverride) {
     // model_context_window is a single top-level Codex setting, not a per-model one. Apply its
     // advertised maximum to every native row so switching native models cannot silently clamp the
@@ -189,7 +242,7 @@ export function augmentNativeModelCatalog(
     }
   }
   const webModels = availableChatGptWebModelRoutes(config)
-    .map(route => buildChatGptWebModel(template, route, config));
+    .map(route => buildChatGptWebModel(selectNativeTemplate(nativeModels, route, config), route, config));
   return {
     ...structuredClone(catalog),
     models: [...nativeModels, ...webModels],

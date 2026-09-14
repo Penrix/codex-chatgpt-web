@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -239,20 +240,180 @@ function tunnel(config: AppConfig): TunnelConfig {
   return config.tunnel;
 }
 
-export function connectTunnel(config: AppConfig): void {
+function managedTunnelConnectArgs(config: AppConfig): string[] {
   const settings = tunnel(config);
-  mkdirSync(settings.profileDir, { recursive: true, mode: 0o700 });
-  const result = runCommand(settings.binaryPath, [
+  return [
     "runtimes", "connect",
     "--alias", settings.alias,
     "--profile", settings.profileName,
     "--profile-dir", settings.profileDir,
     "--tunnel-client-bin", settings.binaryPath,
     "--tunnel-id", settings.tunnelId,
-    "--runtime-api-key", `file:${settings.runtimeKeyFile}`,
+    "--runtime-api-key", "file:" + settings.runtimeKeyFile,
     "--mcp-command", mcpCommand(config),
     "--json",
-  ], { timeout: TUNNEL_READY_TIMEOUT_MS });
+  ];
+}
+
+export function parseTunnelLocalInventoryStatus(
+  output: string,
+  alias: string,
+  exitStatus = 0,
+): TunnelRuntimeStatus {
+  if (exitStatus !== 0) {
+    return { ok: false, processRunning: false, healthy: false, ready: false, detail: safeTunnelDetail(output) };
+  }
+  try {
+    const parsed = JSON.parse(output) as { entries?: unknown };
+    const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    const entry = entries.find(candidate => {
+      return candidate && typeof candidate === "object"
+        && (candidate as { alias?: unknown }).alias === alias;
+    }) as Record<string, unknown> | undefined;
+    if (!entry) {
+      return { ok: false, processRunning: false, healthy: false, ready: false, state: "stopped", detail: "local_inventory=absent" };
+    }
+    const state = typeof entry.runtime_state === "string" ? entry.runtime_state : undefined;
+    const processRunning = state === "starting" || state === "healthy" || state === "ready";
+    const healthy = state === "healthy" || state === "ready";
+    const ready = state === "ready";
+    return {
+      ok: processRunning && healthy && ready,
+      processRunning,
+      healthy,
+      ready,
+      ...(state ? { state } : {}),
+      detail: [
+        "local_inventory=true",
+        "process_running=" + String(processRunning),
+        "healthy=" + String(healthy),
+        "ready=" + String(ready),
+        ...(state ? ["state=" + state] : []),
+      ].join(" "),
+    };
+  } catch {
+    return {
+      ok: false,
+      processRunning: false,
+      healthy: false,
+      ready: false,
+      detail: "tunnel-client returned non-JSON local inventory: " + safeTunnelDetail(output),
+    };
+  }
+}
+
+function tunnelLocalInventoryStatus(config: AppConfig): TunnelRuntimeStatus {
+  const settings = tunnel(config);
+  const result = runCommand(
+    settings.binaryPath,
+    ["runtimes", "cleanup", "--json"],
+    { timeout: 5_000 },
+  );
+  return parseTunnelLocalInventoryStatus(tunnelCommandOutput(result), settings.alias, result.status);
+}
+
+async function connectTunnelOnWindows(config: AppConfig, args: string[]): Promise<void> {
+  const settings = tunnel(config);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(settings.binaryPath, args, {
+      cwd: settings.profileDir,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    let settled = false;
+    let probeInFlight = false;
+    let observedRunning = false;
+    let lastStatus: TunnelRuntimeStatus = {
+      ok: false,
+      processRunning: false,
+      healthy: false,
+      ready: false,
+      detail: "local tunnel runtime has not been observed",
+    };
+    let poll: ReturnType<typeof setInterval> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const clearTimers = () => {
+      if (poll) clearInterval(poll);
+      if (timeout) clearTimeout(timeout);
+    };
+    const stopControlProcess = () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGTERM"); } catch {}
+      }
+      child.unref();
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      fn();
+    };
+    const inspect = () => {
+      if (settled || probeInFlight) return;
+      probeInFlight = true;
+      try {
+        lastStatus = tunnelLocalInventoryStatus(config);
+        if (lastStatus.processRunning) observedRunning = true;
+        if (lastStatus.processRunning && lastStatus.healthy) {
+          finish(() => {
+            stopControlProcess();
+            resolve();
+          });
+          return;
+        }
+        if (observedRunning && lastStatus.state === "stopped") {
+          finish(() => {
+            stopControlProcess();
+            reject(new Error("Tunnel managed runtime stopped during startup: " + lastStatus.detail));
+          });
+        }
+      } catch (error) {
+        lastStatus = {
+          ok: false,
+          processRunning: false,
+          healthy: false,
+          ready: false,
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      } finally {
+        probeInFlight = false;
+      }
+    };
+    child.once("error", (error) => finish(() => reject(error)));
+    child.once("exit", (code) => {
+      if (settled) return;
+      if ((code ?? 1) === 0) {
+        finish(resolve);
+        return;
+      }
+      try { lastStatus = tunnelLocalInventoryStatus(config); } catch {}
+      finish(() => reject(new Error(
+        "Tunnel managed startup failed: control process exited " + String(code ?? 1) + "; " + lastStatus.detail,
+      )));
+    });
+    poll = setInterval(inspect, 250);
+    timeout = setTimeout(() => {
+      finish(() => {
+        stopControlProcess();
+        reject(new Error(
+          "Tunnel managed startup did not produce a healthy local runtime within "
+          + String(TUNNEL_READY_TIMEOUT_MS) + "ms: " + lastStatus.detail,
+        ));
+      });
+    }, TUNNEL_READY_TIMEOUT_MS);
+    inspect();
+  });
+}
+
+export async function connectTunnel(config: AppConfig): Promise<void> {
+  const settings = tunnel(config);
+  mkdirSync(settings.profileDir, { recursive: true, mode: 0o700 });
+  const args = managedTunnelConnectArgs(config);
+  if (process.platform === "win32") {
+    await connectTunnelOnWindows(config, args);
+    return;
+  }
+  const result = runCommand(settings.binaryPath, args, { timeout: TUNNEL_READY_TIMEOUT_MS });
   const structuredOutput = result.stdout.trim();
   const launchError = structuredOutput
     ? tunnelConnectLaunchError(structuredOutput)
@@ -260,10 +421,10 @@ export function connectTunnel(config: AppConfig): void {
   if (result.status !== 0) {
     const detail = launchError && launchError !== "tunnel-client returned non-JSON connect output"
       ? launchError
-      : safeTunnelDetail(tunnelCommandOutput(result) || `exit ${result.status}`);
-    throw new Error(`Tunnel managed startup failed: ${detail}`);
+      : safeTunnelDetail(tunnelCommandOutput(result) || "exit " + String(result.status));
+    throw new Error("Tunnel managed startup failed: " + detail);
   }
-  if (launchError) throw new Error(`Tunnel runtime exited during launch: ${launchError}`);
+  if (launchError) throw new Error("Tunnel runtime exited during launch: " + launchError);
 }
 
 export function stopTunnel(config: AppConfig): void {
@@ -408,10 +569,13 @@ export async function waitForTunnelReady(
   timeoutMs = TUNNEL_READY_TIMEOUT_MS,
 ): Promise<TunnelRuntimeStatus> {
   const deadline = Date.now() + timeoutMs;
-  let status = tunnelStatus(config);
+  const observe = () => process.platform === "win32"
+    ? tunnelLocalInventoryStatus(config)
+    : tunnelStatus(config);
+  let status = observe();
   while (!status.ok && Date.now() < deadline) {
     await new Promise(resolveWait => setTimeout(resolveWait, TUNNEL_STATUS_POLL_INTERVAL_MS));
-    status = tunnelStatus(config);
+    status = observe();
   }
   return status;
 }

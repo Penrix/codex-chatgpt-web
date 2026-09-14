@@ -645,7 +645,18 @@ class RuntimeSupervisor {
         ? entry.live_runtime
         : {};
       const healthBaseUrl = loopbackHealthBaseURL(liveRuntime.base_url);
-      if (healthBaseUrl) this.tunnelHealthBaseUrl = healthBaseUrl;
+      if (healthBaseUrl) {
+        this.tunnelHealthBaseUrl = healthBaseUrl;
+      } else if (typeof parsed.state_root === "string" && parsed.state_root) {
+        const healthUrlFile = path.join(parsed.state_root, "health", `${tunnel.alias}.url`);
+        try {
+          const fileBaseUrl = loopbackHealthBaseURL(fs.readFileSync(healthUrlFile, "utf8").trim());
+          if (fileBaseUrl) this.tunnelHealthBaseUrl = fileBaseUrl;
+        } catch {
+          // The runtime can be healthy before the health URL file becomes visible.
+          // Discovery retries through the same local-only inventory below.
+        }
+      }
       const pid = Number.isInteger(liveRuntime.system?.pid) && liveRuntime.system.pid > 0
         ? liveRuntime.system.pid
         : Number.isInteger(liveRuntime.status?.pid) && liveRuntime.status.pid > 0
@@ -776,36 +787,24 @@ class RuntimeSupervisor {
     }
   }
 
-  async discoverTunnelHealthBaseUrl(config) {
+  async discoverTunnelHealthBaseUrl(config, timeoutMs = 10_000) {
     const tunnel = config.tunnel;
     if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
-    const result = await this.runTunnelCommand(
-      config,
-      ["runtimes", "status", tunnel.alias, "--json"],
-      5_000,
-      "Local tunnel health discovery",
+    const deadline = Date.now() + timeoutMs;
+    let lastDetail = "local tunnel inventory has not exposed a health endpoint";
+    do {
+      const health = await this.readTunnelHealth(config);
+      lastDetail = health.detail;
+      if (this.tunnelHealthBaseUrl) return this.tunnelHealthBaseUrl;
+      if (tunnelRuntimeStopped(health)) {
+        throw new Error(`Local tunnel health discovery stopped: ${health.detail}`);
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(TUNNEL_HEALTH_POLL_INTERVAL_MS);
+    } while (Date.now() < deadline);
+    throw new Error(
+      `Local tunnel health discovery did not expose a verified loopback endpoint within ${timeoutMs}ms: ${lastDetail}`,
     );
-    if (result.code !== 0) {
-      throw new Error(`Local tunnel health discovery failed: ${tunnelControlDiagnostic(result)}`);
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(result.output);
-    } catch (error) {
-      throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
-    }
-    const candidates = [
-      parsed?.local?.effective_health?.base_url,
-      parsed?.local?.health?.base_url,
-      parsed?.health_url,
-      parsed?.ui_url,
-    ];
-    const baseUrl = candidates.map(loopbackHealthBaseURL).find(Boolean);
-    if (!baseUrl) {
-      throw new Error("Local tunnel health discovery returned no verified loopback endpoint");
-    }
-    this.tunnelHealthBaseUrl = baseUrl;
-    return baseUrl;
   }
 
   async waitForTunnelMcpTransport(config, timeoutMs = 10_000) {
@@ -1036,12 +1035,99 @@ class RuntimeSupervisor {
       "--broker-socket",
       config.brokerSocketPath,
     ]);
-    return await this.runTunnelCommand(
-      config,
-      managedTunnelConnectArgs(config, invocation),
-      TUNNEL_START_TIMEOUT_MS,
-      "Tunnel managed startup",
-    );
+    const args = managedTunnelConnectArgs(config, invocation);
+    if (process.platform !== "win32") {
+      return await this.runTunnelCommand(
+        config,
+        args,
+        TUNNEL_START_TIMEOUT_MS,
+        "Tunnel managed startup",
+      );
+    }
+    return await this.runWindowsManagedTunnelConnectCommand(config, args, TUNNEL_START_TIMEOUT_MS);
+  }
+
+  async runWindowsManagedTunnelConnectCommand(config, args, timeoutMs) {
+    const tunnel = config.tunnel;
+    if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
+    return await new Promise((resolve, reject) => {
+      const child = spawn(tunnel.binaryPath, args, {
+        cwd: tunnel.profileDir,
+        detached: false,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      let settled = false;
+      let probeInFlight = false;
+      let observedRunning = false;
+      let lastDetail = "local tunnel runtime has not been observed";
+      let poll = null;
+      let timeout = null;
+      const clearTimers = () => {
+        if (poll) clearInterval(poll);
+        if (timeout) clearTimeout(timeout);
+      };
+      const stopControlProcess = () => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try { child.kill("SIGTERM"); } catch {}
+        }
+        child.unref();
+      };
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        fn();
+      };
+      const inspect = () => {
+        if (settled || probeInFlight) return;
+        probeInFlight = true;
+        void this.readTunnelHealth(config).then((health) => {
+          if (settled) return;
+          lastDetail = health.detail;
+          if (health.processRunning === true) observedRunning = true;
+          if (health.processRunning === true && health.healthy === true) {
+            finish(() => {
+              stopControlProcess();
+              resolve({ code: 0, stdout: "", stderr: "", output: "" });
+            });
+            return;
+          }
+          if (observedRunning && tunnelRuntimeStopped(health)) {
+            finish(() => {
+              stopControlProcess();
+              reject(new Error("Tunnel managed runtime stopped during connect: " + health.detail));
+            });
+          }
+        }).catch((error) => {
+          lastDetail = "local tunnel inventory probe failed: " + errorMessage(error);
+        }).finally(() => {
+          probeInFlight = false;
+        });
+      };
+      child.once("error", (error) => finish(() => reject(error)));
+      child.once("exit", (code) => {
+        if (settled) return;
+        const exitCode = code ?? 1;
+        finish(() => resolve({
+          code: exitCode,
+          stdout: "",
+          stderr: exitCode === 0 ? "" : lastDetail,
+          output: exitCode === 0 ? "" : lastDetail,
+        }));
+      });
+      poll = setInterval(inspect, TUNNEL_HEALTH_POLL_INTERVAL_MS);
+      timeout = setTimeout(() => {
+        finish(() => {
+          stopControlProcess();
+          reject(new Error(
+            "Tunnel managed startup did not produce a healthy local runtime within "
+            + String(timeoutMs) + "ms: " + lastDetail,
+          ));
+        });
+      }, timeoutMs);
+      inspect();
+    });
   }
 
   startTunnelMonitor(config) {

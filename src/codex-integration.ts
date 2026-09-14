@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
 import { getConfigPath, loadConfig, saveConfig } from "./config";
+import { buildManagedWindowsCodexCatalog, getManagedCodexCatalogPath, type ManagedCodexCatalogArtifact } from "./codex-bundled-catalog";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -31,6 +32,12 @@ import type {
 } from "./codex-integration-shared";
 import { assertJournalTargetsConfig, readJournal } from "./codex-integration-journal";
 import {
+  installManagedModelCatalog,
+  restoreManagedModelCatalog,
+  verifyManagedModelCatalogInstalled,
+  verifyManagedModelCatalogRestored,
+} from "./codex-static-catalog-route";
+import {
   findTopLevelAssignment,
   installCompatibilityV1Features,
   splitLines,
@@ -48,6 +55,114 @@ import {
   verifyManagedJournalState,
   verifyRestoredRoute,
 } from "./codex-integration-route";
+
+function catalogPrevious(journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>) {
+  return journal.previous.model_catalog_json;
+}
+
+function verifyManagedCatalogFile(path: string): void {
+  if (!existsSync(path)) throw new Error(`Managed Codex model catalog is missing: ${path}`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`Managed Codex model catalog is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const models = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as { models?: unknown }).models
+    : undefined;
+  if (!Array.isArray(models)
+    || !models.some(model => model && typeof model === "object" && !Array.isArray(model)
+      && typeof (model as { slug?: unknown }).slug === "string"
+      && (model as { slug: string }).slug.startsWith("chatgpt-web/"))) {
+    throw new Error("Managed Codex model catalog does not contain ChatGPT Web models");
+  }
+}
+
+function verifyManagedIntegrationState(
+  text: string,
+  journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>,
+): boolean {
+  verifyManagedJournalState(text, journal);
+  if (journal.version !== 10 || process.platform !== "win32") return false;
+  const catalogPath = getManagedCodexCatalogPath();
+  if (verifyManagedModelCatalogInstalled(text, catalogPath)) {
+    verifyManagedCatalogFile(catalogPath);
+    return true;
+  }
+  verifyManagedModelCatalogRestored(text, catalogPrevious(journal));
+  return false;
+}
+
+type RestorableIntegrationJournal =
+  | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV9
+  | LegacyCodexIntegrationJournalV8
+  | LegacyCodexIntegrationJournalV7
+  | LegacyCodexIntegrationJournalV6
+  | LegacyCodexIntegrationJournalV5
+  | LegacyCodexIntegrationJournalV4;
+
+function verifyRestoredIntegrationState(
+  text: string,
+  journal: RestorableIntegrationJournal,
+): void {
+  verifyRestoredRoute(text, journal);
+  if (journal.version === 10 && process.platform === "win32") {
+    verifyManagedModelCatalogRestored(text, catalogPrevious(journal));
+  }
+}
+
+function restoreManagedIntegrationRoute(
+  text: string,
+  journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>,
+  options: { allowChangedCatalog?: boolean } = {},
+): string {
+  const restored = restoreManagedRoute(text, journal);
+  if (journal.version !== 10 || process.platform !== "win32") return restored;
+  return restoreManagedModelCatalog(
+    restored,
+    getManagedCodexCatalogPath(),
+    catalogPrevious(journal),
+    { allowChanged: options.allowChangedCatalog === true },
+  );
+}
+
+function replacementIntegrationBaseline(
+  currentText: string,
+  configExists: boolean,
+  journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>,
+): string {
+  const baseline = replacementBaseline(currentText, configExists, journal);
+  if (journal.version !== 10 || process.platform !== "win32") return baseline;
+  return restoreManagedModelCatalog(
+    baseline,
+    getManagedCodexCatalogPath(),
+    catalogPrevious(journal),
+    { allowChanged: true },
+  );
+}
+
+function commitInstalledIntegration(
+  journal: CodexIntegrationJournal,
+  configText: string,
+  managedCatalog: ManagedCodexCatalogArtifact | undefined,
+): void {
+  const catalogSnapshot = managedCatalog ? snapshotFile(managedCatalog.path) : undefined;
+  try {
+    if (managedCatalog && catalogSnapshot) writeFileSnapshot(catalogSnapshot, managedCatalog.data);
+    writeIntegrationState(
+      journal,
+      { path: journal.configPath, data: configText },
+      [getCodexModelsCachePath()],
+    );
+  } catch (error) {
+    if (catalogSnapshot) {
+      try { restoreFileSnapshot(catalogSnapshot); } catch { /* Integration state already rolls back its own files. */ }
+    }
+    throw error;
+  }
+}
 
 function installConfiguredRoute(
   baseline: string,
@@ -73,9 +188,12 @@ function installConfiguredRoute(
     replaceExistingRoute,
     replaceExistingRealtimeRoute,
   );
+  const routedText = process.platform === "win32"
+    ? installManagedModelCatalog(route.text, getManagedCodexCatalogPath(), replaceExistingRoute)
+    : route.text;
   const configured = config.subagentProtocol === "compatibility-v1"
     ? (() => {
-        const features = installCompatibilityV1Features(route.text);
+        const features = installCompatibilityV1Features(routedText);
         return {
           text: features.text,
           previous: route.previous,
@@ -86,7 +204,7 @@ function installConfiguredRoute(
           installedAgentMaxDepth: features.installedAgentMaxDepth,
         };
       })()
-    : route;
+    : { ...route, text: routedText };
   const hook = "interruptHookCommand" in config
     ? installCodexInterruptHookCommand(configured.text, getCodexConfigPath(), config.interruptHookCommand)
     : installCodexInterruptHook(configured.text, getCodexConfigPath(), config);
@@ -186,11 +304,11 @@ export function preflightCodexIntegration(
       return;
     }
     try {
-      verifyManagedJournalState(currentText, existing);
+      verifyManagedIntegrationState(currentText, existing);
     } catch (error) {
       if (options.replaceExistingRoute !== true) throw error;
       installConfiguredRoute(
-        replacementBaseline(currentText, configExists, existing),
+        replacementIntegrationBaseline(currentText, configExists, existing),
         installedUrl,
         config,
         true,
@@ -200,7 +318,7 @@ export function preflightCodexIntegration(
     }
     if (existing.version === 10) return;
     const baseline = managedJournalIsActive(existing)
-      ? restoreManagedRoute(currentText, existing)
+      ? restoreManagedIntegrationRoute(currentText, existing)
       : currentText;
     installConfiguredRoute(
       baseline,
@@ -236,6 +354,7 @@ export function installCodexIntegration(
   const currentText = configExists ? readFileSync(configPath, "utf8") : "";
   const existing = readJournal();
   const installedUrl = routeUrl(config);
+  const managedCatalog = buildManagedWindowsCodexCatalog(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
 
   const hasManagedJournal = Boolean(existing && existing.version !== 2);
@@ -247,13 +366,13 @@ export function installCodexIntegration(
     let baseline: string;
     let preservePrevious = true;
     try {
-      verifyManagedJournalState(currentText, existing);
+      verifyManagedIntegrationState(currentText, existing);
       baseline = managedJournalIsActive(existing)
-        ? restoreManagedRoute(currentText, existing)
+        ? restoreManagedIntegrationRoute(currentText, existing)
         : currentText;
     } catch (error) {
       if (options.replaceExistingRoute !== true) throw error;
-      baseline = replacementBaseline(currentText, configExists, existing);
+      baseline = replacementIntegrationBaseline(currentText, configExists, existing);
       preservePrevious = false;
     }
     const patched = installConfiguredRoute(
@@ -296,7 +415,7 @@ export function installCodexIntegration(
       } : {}),
       ...(existing.format ? { format: existing.format } : {}),
     };
-    writeIntegrationState(updated, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+    commitInstalledIntegration(updated, patched.text, managedCatalog);
     return updated;
   }
 
@@ -336,7 +455,7 @@ export function installCodexIntegration(
     } : {}),
     format: textFormat(baseline),
   };
-  writeIntegrationState(journal, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+  commitInstalledIntegration(journal, patched.text, managedCatalog);
   if (existing?.version === 2 && existsSync(existing.catalogPath)) rmSync(existing.catalogPath);
   return journal;
 }
@@ -351,10 +470,10 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
   if ((existing.version === 4 || existing.version === 5 || existing.version === 6 || existing.version === 7 || existing.version === 8 || existing.version === 9 || existing.version === 10) && !existing.active) {
-    verifyRestoredRoute(current, existing);
+    verifyRestoredIntegrationState(current, existing);
     return { changed: false, active: false };
   }
-  const restored = restoreManagedRoute(current, existing);
+  const restored = restoreManagedIntegrationRoute(current, existing);
   const disconnected:
     | CodexIntegrationJournal
     | LegacyCodexIntegrationJournalV9
@@ -380,18 +499,21 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
   if (existing.version === 10 && existing.active) {
-    verifyInstalledRoute(current, existing);
-    return { changed: false, active: true };
+    const staticCatalogActive = verifyManagedIntegrationState(current, existing);
+    if (process.platform !== "win32" || staticCatalogActive) return { changed: false, active: true };
   }
   let baseline: string;
   if ((existing.version === 4 || existing.version === 5 || existing.version === 6 || existing.version === 7 || existing.version === 8 || existing.version === 9 || existing.version === 10) && !existing.active) {
-    verifyRestoredRoute(current, existing);
+    verifyRestoredIntegrationState(current, existing);
     baseline = current;
   } else {
-    verifyInstalledRoute(current, existing);
-    baseline = restoreManagedRoute(current, existing);
+    verifyManagedIntegrationState(current, existing);
+    baseline = restoreManagedIntegrationRoute(current, existing);
   }
   const protocol = journalProtocol(existing);
+  const managedCatalog = process.platform === "win32"
+    ? buildManagedWindowsCodexCatalog(loadConfig())
+    : undefined;
   const hookConfig = existing.version === 10
     ? { interruptHookCommand: existing.interruptHook.command }
     : { runtimeCommand: loadConfig().runtimeCommand };
@@ -433,7 +555,7 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     } : {}),
     ...(existing.format ? { format: existing.format } : {}),
   };
-  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+  commitInstalledIntegration(connected, route.text, managedCatalog);
   return { changed: true, active: true };
 }
 
@@ -449,25 +571,27 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
     }
     restored = restoreLegacyV2(current, journal);
   } else if ((journal.version === 4 || journal.version === 5 || journal.version === 6 || journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10) && !journal.active) {
-    verifyRestoredRoute(current, journal);
+    verifyRestoredIntegrationState(current, journal);
     restored = current;
   } else {
-    restored = restoreManagedRoute(current, journal);
+    restored = restoreManagedIntegrationRoute(current, journal);
   }
   const configSnapshot = snapshotFile(journal.configPath, { followSymlink: true });
   const catalogSnapshot = journal.version === 2 ? snapshotFile(journal.catalogPath) : undefined;
+  const managedCatalogSnapshot = snapshotFile(getManagedCodexCatalogPath());
   const modelsCacheSnapshot = snapshotFile(getCodexModelsCachePath());
   const journalSnapshot = snapshotFile(getCodexJournalPath());
   const recoverySnapshot = snapshotFile(getCodexJournalRecoveryPath());
   try {
     writeFileSnapshot(configSnapshot, restored);
     if (catalogSnapshot?.exists) rmSync(catalogSnapshot.path);
+    rmSync(managedCatalogSnapshot.path, { force: true });
     rmSync(modelsCacheSnapshot.path, { force: true });
     rmSync(getCodexJournalPath(), { force: true });
     rmSync(getCodexJournalRecoveryPath(), { force: true });
   } catch (error) {
     const rollbackFailures: string[] = [];
-    for (const snapshot of [recoverySnapshot, journalSnapshot, modelsCacheSnapshot, catalogSnapshot, configSnapshot]) {
+    for (const snapshot of [recoverySnapshot, journalSnapshot, modelsCacheSnapshot, managedCatalogSnapshot, catalogSnapshot, configSnapshot]) {
       if (!snapshot) continue;
       try {
         restoreFileSnapshot(snapshot);
@@ -489,19 +613,21 @@ export function inspectCodexIntegration(): {
   configPath: string;
   routeUrl?: string;
   journal?: AnyCodexIntegrationJournal;
+  staticCatalogActive: boolean;
   errors: string[];
 } {
   const journal = readJournal();
   const errors: string[] = [];
+  let staticCatalogActive = false;
   if (journal) {
     try {
       assertJournalTargetsConfig(journal, getCodexConfigPath());
       const text = readFileSync(journal.configPath, "utf8");
       if ((journal.version === 4 || journal.version === 5 || journal.version === 6 || journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10) && !journal.active) {
-        verifyRestoredRoute(text, journal);
+        verifyRestoredIntegrationState(text, journal);
       }
       else if (journal.version === 3 || journal.version === 4 || journal.version === 5 || journal.version === 6 || journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10) {
-        verifyInstalledRoute(text, journal);
+        staticCatalogActive = verifyManagedIntegrationState(text, journal);
       }
       else {
         const lines = splitLines(text);
@@ -526,6 +652,7 @@ export function inspectCodexIntegration(): {
       ? { routeUrl: journal.installed.openai_base_url }
       : {}),
     ...(journal ? { journal } : {}),
+    staticCatalogActive,
     errors,
   };
 }

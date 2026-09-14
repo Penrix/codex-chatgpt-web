@@ -1,0 +1,128 @@
+name: V8 Direct Tools Windows
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-windows-direct-tools:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Apply V8 live runtime takeover hotfix
+        shell: pwsh
+        run: node scripts/apply-v8-live-runtime-takeover-hotfix.cjs
+      - name: Prepare official standalone Codex CLI 0.154.0
+        shell: pwsh
+        run: |
+          $url = "https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-package-x86_64-pc-windows-msvc.tar.gz"
+          $expectedSha256 = "94cc5b3632769504c809f6c0364b693c0dfddc5c30c8361095d2263a07ac45a4"
+          $archive = Join-Path $env:RUNNER_TEMP "codex-package-x86_64-pc-windows-msvc.tar.gz"
+          $root = Join-Path $env:RUNNER_TEMP "codex-0.154.0"
+          curl.exe -fL --retry 3 --retry-delay 2 --retry-all-errors $url -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download official Codex CLI 0.154.0 package" }
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Codex CLI archive checksum mismatch: expected $expectedSha256, got $actualSha256"
+          }
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          tar.exe -xzf $archive -C $root
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract official Codex CLI package" }
+          $codex = Join-Path $root "bin\codex.exe"
+          $codeModeHost = Join-Path $root "bin\codex-code-mode-host.exe"
+          if (-not (Test-Path -LiteralPath $codex -PathType Leaf)) { throw "Official Codex package did not contain bin\codex.exe" }
+          if (-not (Test-Path -LiteralPath $codeModeHost -PathType Leaf)) { throw "Official Codex package did not contain bin\codex-code-mode-host.exe" }
+          $version = (& $codex --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '0\.154\.0') { throw "Expected Codex CLI 0.154.0, got: $version" }
+          "CODEX_SMOKE_CLI=$codex" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CODEX_CODE_MODE_HOST=$codeModeHost" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using $version from $codex"
+          Write-Host "Code Mode host: $codeModeHost"
+      - name: Verify Codex Web GPT model catalog against official CLI
+        shell: pwsh
+        run: bun run scripts/smoke-codex-catalog.ts "$env:CODEX_SMOKE_CLI"
+      - name: Capture native Codex Code Mode planner surface
+        shell: pwsh
+        run: bun run scripts/smoke-native-code-mode-planner.ts "$env:CODEX_SMOKE_CLI"
+      - name: Exercise native Codex Code Mode execution loop
+        shell: pwsh
+        run: bun run scripts/smoke-native-code-mode-loop.ts "$env:CODEX_SMOKE_CLI"
+      - name: Exercise native Codex Code Mode yield and wait lifecycle
+        shell: pwsh
+        run: bun run scripts/smoke-native-code-mode-wait.ts "$env:CODEX_SMOKE_CLI"
+      - name: Test route-aware catalog and direct browser tool protocol
+        shell: pwsh
+        run: bun test tests/model-catalog.test.ts tests/model-catalog-route-template.test.ts tests/chatgpt-web-direct-tools.test.ts tests/chatgpt-web-direct-capability.test.ts tests/responses-lite-tools.test.ts
+      - name: Test existing standalone catalog and tunnel boundaries
+        shell: pwsh
+        run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts tests/tunnel.test.ts
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Verify committed direct tool source boundaries
+        shell: pwsh
+        run: |
+          $prompt = Get-Content src/adapters/chatgpt-web/prompt.ts -Raw
+          $adapter = Get-Content src/adapters/chatgpt-web/index.ts -Raw
+          $worker = Get-Content src/adapters/chatgpt-web/browser-worker.ts -Raw
+          $config = Get-Content src/config.ts -Raw
+          $runtime = Get-Content launcher/electron/runtime.cjs -Raw
+          $supervisor = Get-Content launcher/electron/runtime-supervisor.cjs -Raw
+          if (-not $prompt.Contains('chatGptDirectToolProtocolLines(parsed)')) { throw "Direct tool prompt contract missing from committed source" }
+          if (-not $adapter.Contains('parseChatGptDirectToolOutcome(rawAnswer, parsed, roundKey)')) { throw "Direct response parser missing from committed source" }
+          if (-not $adapter.Contains('`${executionNamespace}:direct:${roundKey}`')) { throw "Round-local replay identity missing" }
+          if (-not $adapter.Contains('capabilities: browserCapabilities')) { throw "Direct browser capability isolation missing" }
+          if (-not $adapter.Contains('turnCapabilities.directToolsEnabled === true')) { throw "Direct tool capability gate missing" }
+          if (-not $adapter.Contains('CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID')) { throw "Sol model id import missing" }
+          if (-not $config.Contains('localToolsEnabled: manual && config.mode === "full"')) { throw "Automatic stale Full config can still expose connector tools" }
+          if (-not $config.Contains('directToolsEnabled: !manual && config.solAvailable')) { throw "Automatic Sol direct tool projection missing" }
+          if (-not $runtime.Contains('automaticDirectMigrationRequired')) { throw "Automatic Full-to-direct migration missing" }
+          if (-not $runtime.Contains('takeOverExternalRuntime: externalAutomaticDirectMigration')) { throw "External Automatic runtime takeover gate missing" }
+          if (-not $supervisor.Contains('stopOrphanedConfiguredRuntime(config)')) { throw "Authenticated orphaned runtime recovery missing" }
+          if (-not $supervisor.Contains('prepareExternalMigrationFromConfig(config)')) { throw "External runtime migration takeover missing" }
+          if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
+          Write-Host "V8_COMMITTED_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
+      - name: Smoke browser-only capability and Full migration
+        shell: pwsh
+        run: node scripts/smoke-v8-direct-tools-runtime.cjs
+      - name: Smoke production adapter direct tool handoff without MCP
+        shell: pwsh
+        run: bun run scripts/smoke-v8-direct-tools-adapter.ts
+      - name: Smoke authenticated live runtime takeover
+        shell: pwsh
+        run: node scripts/smoke-v8-live-runtime-takeover.cjs
+      - name: Verify V7 route status and stale-journal repair
+        shell: pwsh
+        run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
+      - name: Typecheck committed runtime
+        shell: pwsh
+        run: bun x --no-install --bun tsc --noEmit
+      - name: Build Windows installer
+        shell: pwsh
+        run: bun run --cwd launcher package:win
+      - name: Record installer SHA-256
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath launcher/artifacts -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer, found $($installers.Count)" }
+          $hash = (Get-FileHash -Algorithm SHA256 $installers[0].FullName).Hash.ToLowerInvariant()
+          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-v8-direct-tools.txt
+          Write-Host "Installer: $($installers[0].FullName)"
+          Write-Host "SHA256: $hash"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-5.0.6-v8-direct-tools-windows-x64
+          path: |
+            launcher/artifacts/*.exe
+            launcher/artifacts/SHA256SUMS-v8-direct-tools.txt
+          if-no-files-found: error
+          retention-days: 14

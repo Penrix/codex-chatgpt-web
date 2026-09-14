@@ -375,6 +375,7 @@ async function routeCommand(args: string[]): Promise<void> {
           installed: status.installed,
           active: status.active,
           ...(status.routeUrl ? { routeUrl: status.routeUrl } : {}),
+          staticCatalogActive: status.staticCatalogActive,
           errors: status.errors,
         };
       })()

@@ -10,6 +10,7 @@ import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { chatGptDirectToolProtocolLines } from "./direct-tools";
 import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
@@ -39,6 +40,8 @@ export interface CompileChatGptWebPromptOptions {
    * reads or mutates ChatGPT's DOM. Completion is accepted only through the bound Zero Risk MCP tools.
    */
   manualControl?: true;
+  /** Automatic Web mode: Codex executes tools from a strict browser JSON envelope; no MCP connector. */
+  directTools?: true;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
@@ -426,6 +429,8 @@ export function compileChatGptWebPrompt(
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
+  const directTools = options?.directTools === true;
+  if (manualControl && directTools) throw new Error("Zero Risk cannot use the automatic direct tool protocol");
   const mode = manualControl
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
@@ -452,13 +457,15 @@ export function compileChatGptWebPrompt(
   if (captureLunaCheckpoint && (parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID || parsed._compactionRequest)) {
     throw new Error("Rolling checkpoints are supported only for normal ChatGPT Luna turns");
   }
-  if (mode.localTools && !turnToken) {
+  if (mode.localTools && !directTools && !turnToken) {
     throw new Error(manualControl
       ? "ChatGPT Zero Risk requires a broker request id"
       : "Tool-capable ChatGPT web mode requires a broker turn token");
   }
-  if (!mode.localTools && turnToken !== undefined) {
-    throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
+  if ((!mode.localTools || directTools) && turnToken !== undefined) {
+    throw new Error(directTools
+      ? "Direct ChatGPT Web tools must not receive an MCP capability token"
+      : "A read-only ChatGPT Web effort must not receive a local-tool capability token");
   }
   const system = parsed.context.systemPrompt ?? [];
   const sharedContract = [
@@ -494,15 +501,17 @@ export function compileChatGptWebPrompt(
       "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
     : mode.localTools
-    ? [
-      "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
-      "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
-      "Use actual Codex Native results as evidence for local observations and effects.",
-      "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
-      "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
-      "Continue using the available tools until the requested work is complete and verified.",
-      "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
-    ]
+    ? directTools
+      ? chatGptDirectToolProtocolLines(parsed)
+      : [
+        "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+        "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
+        "Use actual Codex Native results as evidence for local observations and effects.",
+        "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
+        "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
+        "Continue using the available tools until the requested work is complete and verified.",
+        "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
+      ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
       "Use any ChatGPT-native capabilities available in this chat—including web search, browsing, research, and other first-party tools—whenever they help complete the request. The missing local-computer bridge says nothing about whether those ChatGPT capabilities are available.",
@@ -568,11 +577,17 @@ export function compileChatGptWebPrompt(
       "</codex_transport_resume>",
     ]
     : mode.localTools
-    ? [
-      "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
-      "</codex_transport_resume>",
-    ]
+    ? directTools
+      ? [
+        "<codex_transport_resume>",
+        "The task context is complete. Execute the latest active user request now. If local work is needed, end this browser response with the exact tool_calls JSON envelope; Codex will execute it and return the result in the next round.",
+        "</codex_transport_resume>",
+      ]
+      : [
+        "<codex_transport_resume>",
+        `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+        "</codex_transport_resume>",
+      ]
     : [
       "<codex_transport_resume>",
       "The task context is complete. Execute the latest active user request now under the capability contract above.",
@@ -585,9 +600,11 @@ export function compileChatGptWebPrompt(
       dropped: Math.max(0, countChatGptContextImages(sourceMessages) - CHATGPT_MAX_INPUT_IMAGES),
     };
     const messages = sourceMessages.map(message => messageEnvelope(message, images, budget));
-    const answerContract = captureLunaCheckpoint
-      ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
-      : "Return only the answer that the outer Codex task should receive.";
+    const answerContract = directTools
+      ? "Return only the single Codex browser tool protocol JSON object required above."
+      : captureLunaCheckpoint
+        ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
+        : "Return only the answer that the outer Codex task should receive.";
     if (multipartEnabled) {
       const records: MultipartContextRecord[] = [
         ...system.map((content, system_index) => ({ kind: "system" as const, system_index, content })),

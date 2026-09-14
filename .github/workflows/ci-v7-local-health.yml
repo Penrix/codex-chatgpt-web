@@ -1,77 +1,16 @@
-name: CI
+name: V7 Local Health Windows
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - name: Validate launcher installer with Windows PowerShell 5.1
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          if ($PSVersionTable.PSVersion.Major -ne 5) {
-            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
-          }
-          $source = Get-Content scripts/install-launcher.ps1 -Raw
-          [void][scriptblock]::Create($source)
-          if ($source.Contains("IsPathFullyQualified")) {
-            throw "The Windows PowerShell 5.1 installer cannot use the .NET Core-only IsPathFullyQualified API"
-          }
-          if (-not [Environment]::Is64BitOperatingSystem) {
-            throw "The Windows CI runner must be 64-bit"
-          }
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - run: bun install --frozen-lockfile
-      - run: bun install --frozen-lockfile
-        working-directory: launcher
-      - name: Prepare AVX2-independent Windows runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
-      - name: Prepare compatible Linux libnotify
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y meson ninja-build pkg-config libglib2.0-dev libgdk-pixbuf-2.0-dev binutils
-          ./scripts/prepare-linux-libnotify.sh
-      - name: Prepare owned AppImage toolset
-        if: runner.os == 'Linux'
-        run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
-      - run: bun run verify
-      - run: bun run app:package
-      - name: Verify Linux AppImage ABI on current Arch
-        if: runner.os == 'Linux'
-        run: |
-          artifact="$(find launcher/artifacts -maxdepth 1 -name '*-linux-x64.AppImage' -print -quit)"
-          test -n "$artifact"
-          docker run --rm -v "$PWD:/work:ro" -e APPIMAGE_PATH="/work/$artifact" archlinux:base \
-            sh -lc 'pacman -Sy --noconfirm binutils file glibc alsa-lib at-spi2-core cairo cups gtk3 libx11 libxcb libxcomposite libxdamage libxext libxfixes libxkbcommon libxrandr mesa nspr nss pango >/dev/null && /work/launcher/scripts/smoke-linux-appimage-symbols.sh "$APPIMAGE_PATH"'
-      - name: Ensure virtual display is available
-        if: runner.os == 'Linux'
-        run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
-      - run: bun run app:smoke
-
-  standalone-windows-installer:
+  standalone-windows-local-health:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Apply V7 standalone launcher hotfixes
-        shell: pwsh
-        run: node scripts/apply-v7-standalone-hotfix.cjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -118,10 +57,22 @@ jobs:
       - name: Test Windows managed tunnel connect boundary
         shell: pwsh
         run: bun test tests/tunnel.test.ts
+      - name: Verify committed local-only health discovery
+        shell: pwsh
+        run: |
+          $source = Get-Content launcher/electron/runtime-supervisor.cjs -Raw
+          $start = $source.IndexOf('  async discoverTunnelHealthBaseUrl(config, timeoutMs = 10_000)')
+          $finish = $source.IndexOf("`n  async waitForTunnelMcpTransport", $start)
+          if ($start -lt 0 -or $finish -lt 0) { throw "Local-only health discovery block missing" }
+          $block = $source.Substring($start, $finish - $start)
+          if ($block.Contains('"runtimes", "status"')) { throw "Health discovery still calls runtimes status" }
+          if (-not $block.Contains('await this.readTunnelHealth(config)')) { throw "Health discovery does not use local inventory" }
+          if (-not $source.Contains('path.join(parsed.state_root, "health", `${tunnel.alias}.url`)')) { throw "Health URL file fallback missing" }
+          Write-Host "V7_LOCAL_HEALTH_DISCOVERY_OK"
       - name: Verify V7 route status and stale-journal repair
         shell: pwsh
         run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
-      - name: Typecheck patched runtime
+      - name: Typecheck committed runtime
         shell: pwsh
         run: bun x --no-install --bun tsc --noEmit
       - name: Build Windows installer
@@ -135,25 +86,14 @@ jobs:
             throw "Expected exactly one Windows installer, found $($installers.Count)"
           }
           $hash = (Get-FileHash -Algorithm SHA256 $installers[0].FullName).Hash.ToLowerInvariant()
-          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-standalone-v7.txt
+          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii launcher/artifacts/SHA256SUMS-v7-local-health.txt
           Write-Host "Installer: $($installers[0].FullName)"
           Write-Host "SHA256: $hash"
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-web-gpt-5.0.6-standalone-cli-v7-windows-x64
+          name: codex-web-gpt-5.0.6-v7-local-health-windows-x64
           path: |
             launcher/artifacts/*.exe
-            launcher/artifacts/SHA256SUMS-standalone-v7.txt
+            launcher/artifacts/SHA256SUMS-v7-local-health.txt
           if-no-files-found: error
           retention-days: 14
-
-  actionlint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.x"
-          cache: false
-      - name: Lint GitHub Actions
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -config-file .github/actionlint.yaml .github/workflows/*.yml

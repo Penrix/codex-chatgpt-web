@@ -8,6 +8,8 @@ export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
+  /** Native Codex execution reached through strict browser envelopes rather than a ChatGPT connector. */
+  directToolsEnabled?: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
 }
@@ -53,17 +55,17 @@ export function resolveChatGptWebModelMode(
   const effort = reasoning ?? "high";
   switch (effort) {
     case "low":
-      return { modelId, effort, displayLabel: "Instant", uiEffortIndex: 0, thinkEnabled: false, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Instant", uiEffortIndex: 0, thinkEnabled: false, localTools: capabilities.localToolsEnabled || capabilities.directToolsEnabled === true };
     case "medium":
-      return { modelId, effort, displayLabel: "Medium", uiEffortIndex: 1, thinkEnabled: false, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Medium", uiEffortIndex: 1, thinkEnabled: false, localTools: capabilities.localToolsEnabled || capabilities.directToolsEnabled === true };
     case "high":
-      return { modelId, effort, displayLabel: "High", uiEffortIndex: 2, thinkEnabled: false, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "High", uiEffortIndex: 2, thinkEnabled: false, localTools: capabilities.localToolsEnabled || capabilities.directToolsEnabled === true };
     case "xhigh":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Extra High effort is not available for this account");
-      return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, thinkEnabled: false, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, thinkEnabled: false, localTools: capabilities.localToolsEnabled || capabilities.directToolsEnabled === true };
     case "max":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Pro effort is not available for this account");
-      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, thinkEnabled: false, localTools: capabilities.localToolsEnabled };
+      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, thinkEnabled: false, localTools: capabilities.localToolsEnabled || capabilities.directToolsEnabled === true };
     default:
       throw new Error(`ChatGPT web effort is not supported: ${effort}`);
   }
