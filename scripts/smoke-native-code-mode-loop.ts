@@ -249,9 +249,6 @@ try {
     `model_provider = "native_loop"`,
     `model_catalog_json = ${tomlString(catalogPath)}`,
     "",
-    "[windows]",
-    `sandbox = "unelevated"`,
-    "",
     "[model_providers.native_loop]",
     `name = "Native Code Mode Loop"`,
     `base_url = ${tomlString(baseUrl)}`,
@@ -263,7 +260,7 @@ try {
   const child = spawn(codex, [
     "exec",
     "--model", "chatgpt-web/high",
-    "--sandbox", "workspace-write",
+    "--sandbox", "danger-full-access",
     "--skip-git-repo-check",
     "--ephemeral",
     "--color", "never",
