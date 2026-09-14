@@ -27,6 +27,13 @@ replaceExactlyOnce(
   "stale route startup recovery",
 );
 
+replaceExactlyOnce(
+  "src/tunnel.ts",
+  `  ], { timeout: TUNNEL_READY_TIMEOUT_MS });`,
+  `  ], {\n    timeout: TUNNEL_READY_TIMEOUT_MS,\n    ...(process.platform === "win32" ? { stdio: "ignore" } : {}),\n  });`,
+  "Windows managed tunnel bootstrap stdio",
+);
+
 const cli = fs.readFileSync("src/cli.ts", "utf8");
 if (!cli.includes("staticCatalogActive: status.staticCatalogActive")) {
   throw new Error("V7 route status hotfix did not persist");
@@ -34,6 +41,10 @@ if (!cli.includes("staticCatalogActive: status.staticCatalogActive")) {
 const main = fs.readFileSync("launcher/electron/main.cjs", "utf8");
 if (!main.includes('logger.warn("codex.route_repair_required"')) {
   throw new Error("V7 stale-route startup hotfix did not persist");
+}
+const tunnel = fs.readFileSync("src/tunnel.ts", "utf8");
+if (!tunnel.includes('process.platform === "win32" ? { stdio: "ignore" } : {}')) {
+  throw new Error("V7 Windows tunnel bootstrap stdio hotfix did not persist");
 }
 
 process.stdout.write("V7_STANDALONE_HOTFIX_APPLIED\n");
