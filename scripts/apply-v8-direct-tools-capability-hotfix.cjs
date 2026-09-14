@@ -72,15 +72,8 @@ replaceCount(
   adapterPath,
   `const directTools = !manualRequest && mode.localTools && parsed.modelId === CHATGPT_WEB_MODEL_ID;`,
   `const directTools = !manualRequest\n      && turnCapabilities.directToolsEnabled === true\n      && parsed.modelId === CHATGPT_WEB_MODEL_ID;`,
-  1,
-  "runtime direct-tools capability selection",
-);
-replaceCount(
-  adapterPath,
-  `const directTools = !manualRequest && mode.localTools && parsed.modelId === CHATGPT_WEB_MODEL_ID;`,
-  `const directTools = !manualRequest\n          && turnCapabilities.directToolsEnabled === true\n          && parsed.modelId === CHATGPT_WEB_MODEL_ID;`,
-  1,
-  "request direct-tools capability selection",
+  2,
+  "direct-tools capability selection",
 );
 
 replaceExactlyOnce(
@@ -120,8 +113,8 @@ replaceExactlyOnce(
 
 replaceExactlyOnce(
   runtimePath,
-  `      existing.mode === "full" ? "--full" : "--browser-only",`,
-  `      targetMode === "full" ? "--full" : "--browser-only",`,
+  `    const args = [\n      "setup",\n      existing.mode === "full" ? "--full" : "--browser-only",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      // A release may repair capability detection. Reusing the previous result can`,
+  `    const args = [\n      "setup",\n      targetMode === "full" ? "--full" : "--browser-only",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      // A release may repair capability detection. Reusing the previous result can`,
   "managed runtime target mode",
 );
 
@@ -134,15 +127,15 @@ replaceExactlyOnce(
 
 replaceExactlyOnce(
   runtimePath,
-  `      mode: existing.mode,\n      fromVersion: existing.config.releaseVersion,`,
-  `      mode: targetMode,\n      fromVersion: existing.config.releaseVersion,`,
+  `      updated: true,\n      mode: existing.mode,\n      fromVersion: existing.config.releaseVersion,`,
+  `      updated: true,\n      mode: targetMode,\n      fromVersion: existing.config.releaseVersion,`,
   "managed runtime migration result",
 );
 
 replaceExactlyOnce(
   runtimePath,
-  `      current.mode === "full" ? "--full" : "--browser-only",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),`,
-  `      mode === "automatic" ? "--browser-only" : "--full",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),`,
+  `    const args = [\n      ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),\n      current.mode === "full" ? "--full" : "--browser-only",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),`,
+  `    const args = [\n      ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),\n      mode === "automatic" ? "--browser-only" : "--full",\n      "--browser-host-descriptor",\n      this.browserDescriptorPath,\n      ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),`,
   "interaction-mode direct runtime selection",
 );
 
