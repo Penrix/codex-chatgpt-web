@@ -86,28 +86,33 @@ try {
     throw new Error(`Codex did not load the Compatibility V1 feature override:\n${features}`);
   }
 
-  // Codex 0.154 exposes at most five picker-visible model overrides in spawn_agent, in the model
-  // manager's native priority order. New native rows such as Astra must not be displaced merely to
-  // reserve four Web slots. The invariant owned here is narrower: preserve the official native
-  // prefix, keep Sol delegatable, and ensure the user's primary Web High route remains reachable.
+  // Codex 0.154 exposes at most five picker-visible model overrides in spawn_agent. Our augmented
+  // catalog deliberately gives the Web routes priorities after the native models we retain for V1,
+  // so newer native rows (for example Astra) must keep their relative order and must never be
+  // displaced merely to reserve a fixed number of Web slots. Do not require every picker-visible
+  // native model to fit inside the five-slot spawn roster: once Web routes enter that bounded roster,
+  // later native rows such as Terra/Luna/5.5 naturally fall outside it.
   const spawnOverrides = (catalog.models ?? [])
     .filter(model => model.supported_in_api === true && model.visibility === "list")
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  const nativePickerPrefix = (catalog.models ?? [])
+  const nativePriorityOrder = (catalog.models ?? [])
     .filter(model => model.supported_in_api === true
       && model.visibility === "list"
       && !model.slug?.startsWith("chatgpt-web/"))
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
-    .slice(0, Math.min(5, spawnOverrides.length))
     .map(model => model.slug);
-  const actualNativePrefix = spawnOverrides.slice(0, nativePickerPrefix.length);
+  const retainedNativePrefix = spawnOverrides.filter(slug => !slug?.startsWith("chatgpt-web/"));
+  const expectedRetainedNativePrefix = nativePriorityOrder.slice(0, retainedNativePrefix.length);
+  const firstWebIndex = spawnOverrides.findIndex(slug => slug?.startsWith("chatgpt-web/"));
   if (spawnOverrides.length !== 5
-    || JSON.stringify(actualNativePrefix) !== JSON.stringify(nativePickerPrefix)
+    || retainedNativePrefix.length === 0
+    || JSON.stringify(retainedNativePrefix) !== JSON.stringify(expectedRetainedNativePrefix)
+    || firstWebIndex !== retainedNativePrefix.length
     || !spawnOverrides.includes("gpt-5.6-sol")
     || !spawnOverrides.includes("chatgpt-web/high")) {
-    throw new Error(`Codex did not preserve the bounded native-first V1 subagent roster: ${JSON.stringify({ spawnOverrides, nativePickerPrefix })}`);
+    throw new Error(`Codex did not preserve the bounded native-first V1 subagent roster: ${JSON.stringify({ spawnOverrides, nativePriorityOrder, retainedNativePrefix })}`);
   }
   process.stdout.write("NATIVE_CODEX_CATALOG_SMOKE_OK\n");
 } finally {
