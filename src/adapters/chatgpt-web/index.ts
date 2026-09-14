@@ -23,8 +23,9 @@ import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
-import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { parseChatGptDirectToolOutcome } from "./direct-tools";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
@@ -354,6 +355,7 @@ export function createChatGptWebAdapter(
   }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
+    directToolsEnabled: provider.chatgptWeb?.directToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
@@ -405,6 +407,11 @@ export function createChatGptWebAdapter(
     const mode = manualRequest
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
+    // Sol/High can hand tool selection back to native Codex through the Responses round-trip.
+    // Luna keeps its existing MCP path because its rolling-checkpoint tail is not a single JSON envelope.
+    const directTools = !manualRequest
+      && turnCapabilities.directToolsEnabled === true
+      && parsed.modelId === CHATGPT_WEB_MODEL_ID;
     const identity = extractChatGptTurnIdentity(parsed);
     const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
       && !parsed._compactionRequest
@@ -415,6 +422,7 @@ export function createChatGptWebAdapter(
     const conversationKey = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
       && mode.localTools
+      && !directTools
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
@@ -706,6 +714,44 @@ export function createChatGptWebAdapter(
         cancel: browserTurn.cancel,
       };
     }
+    if (directTools) {
+      const browserCapabilities = { ...turnCapabilities, localToolsEnabled: false };
+      const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
+        traceId,
+        modelId: parsed.modelId,
+        reasoning: parsed.options.reasoning,
+        // Browser-local tools are deliberately disabled: the JSON envelope is translated back to
+        // native Codex, which remains the only local executor. This also avoids connector selection.
+        capabilities: browserCapabilities,
+        prepare: async () => ({
+          ...compileChatGptWebPrompt(
+            checkpointInput.parsed,
+            turnCapabilities,
+            undefined,
+            { ...compileOptionsFor(checkpointInput.parsed), directTools: true },
+          ),
+          release: () => {},
+        }),
+        abortSignal: browserAbort.signal,
+        ...submissionLifecycle,
+        ...multipartProgressLifecycle,
+        onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
+        onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
+        // Keep the protocol JSON private. runTurn parses the completed buffer and emits either
+        // native tool_call events or only the final envelope content.
+        onTextDelta: delta => text.push(delta),
+      })), browserAbort);
+      return {
+        mode: "read-only",
+        browser: browserTurn.browser,
+        physicalSettlement: browserTurn.physicalSettlement,
+        trace,
+        text,
+        usageInput: checkpointInput.parsed,
+        submission,
+        cancel: browserTurn.cancel,
+      };
+    }
     if (!environment) throw new Error("Tool-capable ChatGPT web mode requires a trusted Codex environment");
     const token = deferred<string>();
     const externalProgress = new ChatGptExternalTurnProgress();
@@ -820,6 +866,9 @@ export function createChatGptWebAdapter(
         const mode = manualRequest
           ? { localTools: true }
           : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
+        const directTools = !manualRequest
+      && turnCapabilities.directToolsEnabled === true
+      && parsed.modelId === CHATGPT_WEB_MODEL_ID;
         const structuredOutputValidator = parsed._compactionRequest
           ? undefined
           : createChatGptStructuredOutputValidator(parsed.options.outputFormat);
@@ -838,7 +887,7 @@ export function createChatGptWebAdapter(
           return;
         }
         let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
-        if (mode.localTools) {
+        if (mode.localTools && !directTools) {
           try {
             environment = environmentStore.resolve(parsed);
           } catch (error) {
@@ -850,7 +899,8 @@ export function createChatGptWebAdapter(
           }
         }
         if (parsed._compactionRequest) {
-          const structuredCompactionRequired = parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
+          const structuredCompactionRequired = manualRequest
+            && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
             && configuredCapabilities.localToolsEnabled;
           if (structuredCompactionRequired
             && (!retainedLauncherDescriptor || (!manualRequest && !structuredBroker))) {
@@ -1107,7 +1157,12 @@ export function createChatGptWebAdapter(
           const responseExecutionKey = `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`;
           await chatGptTurnSessions.retireAndWait(responseExecutionKey, incoming.abortSignal);
         }
-        const executionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
+        const roundKey = chatGptTurnRoundKey(parsed);
+        // A direct browser tool response completes at every native tool boundary. Give each
+        // canonical Responses round its own replayable browser session while retaining one owner.
+        const executionKey = directTools
+          ? `${executionNamespace}:direct:${roundKey}`
+          : `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
         const ownerKey = `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`;
         const nativeIdentity = extractChatGptTurnIdentity(parsed);
         const nativeTurnId = nativeIdentity.turnId;
@@ -1116,7 +1171,9 @@ export function createChatGptWebAdapter(
         if (abortedTurnIds?.size) {
           chatGptTurnSessions.retireAbortedOwnerTurns(ownerKey, abortedTurnIds, executionKey);
         }
-        const traceId = chatGptWebTraceId(provider, parsed);
+        const traceId = directTools
+          ? createHash("sha256").update(executionKey).digest("hex").slice(0, 12)
+          : chatGptWebTraceId(provider, parsed);
         const session = await chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
           executionKey,
           ownerKey,
@@ -1127,7 +1184,6 @@ export function createChatGptWebAdapter(
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
         );
-        const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
           // observer disconnects midway through emission, an exact reconnect can replay the entire
@@ -1156,11 +1212,56 @@ export function createChatGptWebAdapter(
               session.completeRound(roundKey);
               return;
             }
+            const finishDirectBrowserAnswer = (rawAnswer: string, reasoning: string[]): void => {
+              if (session.runtime.text.value() !== rawAnswer) {
+                throw new Error("ChatGPT browser protocol stream did not reproduce the completed answer");
+              }
+              const direct = parseChatGptDirectToolOutcome(rawAnswer, parsed, roundKey);
+              if (direct.kind === "tool_calls") {
+                validateBatchTools(parsed, direct.requests);
+                emitRoundBatch(buffer => emitToolBatch(
+                  direct.requests,
+                  estimateChatGptWebUsage(
+                    currentUsageInput(parsed),
+                    { reasoning, toolRequests: direct.requests },
+                    turnCapabilities,
+                    experimentalBiggerContext,
+                  ),
+                  buffer,
+                ));
+                session.completeRound(roundKey);
+                chatGptWebTurnRetryPolicy.clear(retryKey);
+                return;
+              }
+              structuredOutputValidator?.(direct.content);
+              emitRoundBatch(buffer => emitTextDeltas([direct.content], buffer));
+              session.setFinalReasoning(reasoning);
+              session.setFinalEvents(session.roundEvents(roundKey));
+              emitRoundBatch(buffer => emitBrowserCompletion(
+                { type: "final", answer: direct.content },
+                estimateChatGptWebUsage(
+                  currentUsageInput(parsed),
+                  { answer: rawAnswer, reasoning },
+                  turnCapabilities,
+                  experimentalBiggerContext,
+                ),
+                buffer,
+              ));
+              session.completeRound(roundKey);
+              chatGptWebTurnRetryPolicy.clear(retryKey);
+            };
+
             const settled = session.settledOutcome();
             if (settled) {
               if (settled.type === "error") throw settled.error;
               const trace = session.runtime.trace.drain();
               const completedTextDeltas = session.runtime.text.drain();
+              if (directTools) {
+                session.appendRoundReasoning(roundKey, trace.map(event => event.text));
+                emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
+                finishDirectBrowserAnswer(settled.answer, session.roundReasoning(roundKey));
+                return;
+              }
               const finalReplay = replay.length === 0
                 && trace.length === 0
                 && completedTextDeltas.length === 0
@@ -1196,6 +1297,22 @@ export function createChatGptWebAdapter(
               ));
               session.completeRound(roundKey);
               chatGptWebTurnRetryPolicy.clear(retryKey);
+              return;
+            }
+
+            if (directTools) {
+              const initialTrace = session.runtime.trace.drain();
+              session.appendRoundReasoning(roundKey, initialTrace.map(event => event.text));
+              emitRoundBatch(buffer => emitTraceEvents(initialTrace, buffer));
+              // Drain protocol fragments without exposing them through Codex's user-facing stream.
+              session.runtime.text.drain();
+              const directOutcome = await withAbort(session.browserOutcome, incoming.abortSignal);
+              const finalTrace = session.runtime.trace.drain();
+              session.appendRoundReasoning(roundKey, finalTrace.map(event => event.text));
+              emitRoundBatch(buffer => emitTraceEvents(finalTrace, buffer));
+              session.runtime.text.drain();
+              if (directOutcome.type === "error") throw directOutcome.error;
+              finishDirectBrowserAnswer(directOutcome.answer, session.roundReasoning(roundKey));
               return;
             }
 

@@ -1347,6 +1347,17 @@ async function start() {
     }
   }).catch(async (error) => {
     const primary = error instanceof Error ? error.message : String(error);
+    if (primary.startsWith("Codex bridge route is inconsistent:")) {
+      logger.warn("codex.route_repair_required", { message: primary });
+      const state = stateStore.update({
+        coreSetupComplete: false,
+        codexCatalogVerified: false,
+        codexRestartRequired: false,
+      });
+      send("launcher:state-changed", state);
+      stopCatalogVerificationMonitor();
+      return;
+    }
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
     const message = routeRecovery.error
       ? `${primary}; restoring the previous Codex route also failed: ${routeRecovery.error}`

@@ -567,7 +567,10 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       headed: config.headed,
-      localToolsEnabled: config.mode === "full",
+      // Automatic Sol/High must never fall back to a ChatGPT Connector merely because an
+      // older installation still has mode=full. Full MCP is reserved for Manual / Zero Risk.
+      localToolsEnabled: manual && config.mode === "full",
+      directToolsEnabled: !manual && config.solAvailable,
       solAvailable: manual ? false : config.solAvailable,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,

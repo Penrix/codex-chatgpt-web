@@ -1016,10 +1016,12 @@ class RuntimeHost {
     this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
-    const mode = existing.mode;
     const interactionMode = existing.configured
       ? existing.config?.browserInteractionMode ?? this.browserInteractionMode()
       : this.browserInteractionMode();
+    // Automatic Sol/High tools are executed by native Codex through the browser envelope protocol.
+    // Do not preserve a legacy Full/Tunnel dependency merely because an older release configured it.
+    const mode = interactionMode === "automatic" ? "browser-only" : existing.mode;
     if (!existing.configured && interactionMode === "manual") {
       throw new Error("Zero Risk must be installed through MCP setup because tunnel credentials are required");
     }
@@ -1061,10 +1063,10 @@ class RuntimeHost {
     }
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
-    const mode = existing.mode;
     const interactionMode = existing.configured
       ? existing.config?.browserInteractionMode ?? this.browserInteractionMode()
       : "automatic";
+    const mode = interactionMode === "automatic" ? "browser-only" : existing.mode;
     const args = [
       "dev",
       "setup",
@@ -1090,7 +1092,7 @@ class RuntimeHost {
     if (!current.configured) {
       throw new Error("Initialize the runtime before changing Bigger Context");
     }
-    const mode = current.mode;
+    const mode = current.config?.browserInteractionMode === "manual" ? current.mode : "browser-only";
     const contextFlag = enabled === true ? "--bigger-context" : "--standard-context";
     if (this.launcherProfile === "development") {
       const args = [
@@ -1173,6 +1175,8 @@ class RuntimeHost {
     const connectorMigrationRequired = existing.mode === "full"
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
+    const automaticDirectMigrationRequired = interactionMode === "automatic" && existing.mode === "full";
+    const targetMode = automaticDirectMigrationRequired ? "browser-only" : existing.mode;
     const expectedTunnelProfile = interactionMode === "manual"
       ? "codex-chatgpt-web-zero-risk"
       : "codex-chatgpt-web";
@@ -1193,12 +1197,13 @@ class RuntimeHost {
     if (existing.owner !== "launcher"
       || (existing.config?.releaseVersion === currentVersion
         && !connectorMigrationRequired
-        && !tunnelProfileMigrationRequired)) {
+        && !tunnelProfileMigrationRequired
+        && !automaticDirectMigrationRequired)) {
       return { updated: false };
     }
     const args = [
       "setup",
-      existing.mode === "full" ? "--full" : "--browser-only",
+      targetMode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       // A release may repair capability detection. Reusing the previous result can
@@ -1208,17 +1213,21 @@ class RuntimeHost {
       "--restart-service",
     ];
     const result = await this.runSetup("runtime-upgrade", args, {
-      message: tunnelProfileMigrationRequired
-        ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
-        : `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
-      successMessage: tunnelProfileMigrationRequired
-        ? `${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP profile migrated`
-        : `Launcher runtime upgraded to ${currentVersion}`,
-      timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      message: automaticDirectMigrationRequired
+        ? "Migrating Automatic mode from MCP to native Codex direct tools"
+        : tunnelProfileMigrationRequired
+          ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
+          : `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
+      successMessage: automaticDirectMigrationRequired
+        ? "Automatic mode now uses native Codex direct tools without a Tunnel"
+        : tunnelProfileMigrationRequired
+          ? `${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP profile migrated`
+          : `Launcher runtime upgraded to ${currentVersion}`,
+      timeoutMs: targetMode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
     });
     return {
       updated: true,
-      mode: existing.mode,
+      mode: targetMode,
       fromVersion: existing.config.releaseVersion,
       toVersion: currentVersion,
       connectorMigrated: connectorMigrationRequired,
@@ -1332,7 +1341,7 @@ class RuntimeHost {
     }
     const args = [
       ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),
-      current.mode === "full" ? "--full" : "--browser-only",
+      mode === "automatic" ? "--browser-only" : "--full",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),
@@ -1350,7 +1359,7 @@ class RuntimeHost {
       successMessage: mode === "manual"
         ? `Zero Risk enabled${this.launcherProfile === "production" ? "; restart Codex" : ""}`
         : `Automatic browser interaction enabled${this.launcherProfile === "production" ? "; restart Codex" : ""}`,
-      timeoutMs: current.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      timeoutMs: mode === "manual" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
       afterRuntimeReady,
     };
     const result = this.launcherProfile === "development"
