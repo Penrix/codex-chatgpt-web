@@ -254,6 +254,7 @@ try {
   const child = spawn(codex, [
     "exec",
     "--model", "chatgpt-web/high",
+    "--sandbox", "workspace-write",
     "--skip-git-repo-check",
     "--ephemeral",
     "--color", "never",
