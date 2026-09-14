@@ -10,6 +10,12 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value.replace(/\\/g, "/"));
 }
@@ -29,30 +35,38 @@ function runCodex(codex: string, args: string[], env = process.env): string {
 
 function nativeCatalog(codex: string): Record<string, unknown> {
   const parsed = JSON.parse(runCodex(codex, ["debug", "models", "--bundled"])) as unknown;
-  assert(parsed && typeof parsed === "object" && !Array.isArray(parsed), "Codex bundled catalog is not an object");
-  return parsed as Record<string, unknown>;
+  const object = record(parsed);
+  assert(object, "Codex bundled catalog is not an object");
+  return object;
 }
 
 function toolName(tool: unknown): string | undefined {
-  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return undefined;
-  const name = (tool as { name?: unknown }).name;
-  return typeof name === "string" ? name : undefined;
+  const object = record(tool);
+  return object && typeof object.name === "string" ? object.name : undefined;
 }
 
 function toolType(tool: unknown): string | undefined {
-  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return undefined;
-  const type = (tool as { type?: unknown }).type;
-  return typeof type === "string" ? type : undefined;
+  const object = record(tool);
+  return object && typeof object.type === "string" ? object.type : undefined;
 }
 
 function describeTools(tools: unknown[]): string {
   return JSON.stringify(tools.map(tool => ({ type: toolType(tool), name: toolName(tool) })));
 }
 
-function codeModeFeatureSummary(text: string): string {
-  return text.split(/\r?\n/)
-    .filter(line => /^code_mode(?:_host|_only|_prewarm)?\s/.test(line))
-    .join(" | ");
+function requestModelTools(body: Record<string, unknown>): { tools: unknown[]; source: "top-level" | "additional_tools" } {
+  if (Array.isArray(body.tools)) return { tools: body.tools, source: "top-level" };
+  if (Array.isArray(body.input)) {
+    const additional = body.input
+      .map(record)
+      .find(item => item?.type === "additional_tools");
+    if (additional && Array.isArray(additional.tools)) {
+      return { tools: additional.tools, source: "additional_tools" };
+    }
+  }
+  throw new Error(
+    `Native Codex planner request exposed no model tools in either Responses or Responses Lite shape: keys=${JSON.stringify(Object.keys(body))} input=${JSON.stringify(body.input)}`,
+  );
 }
 
 function terminalSse(): string {
@@ -104,11 +118,11 @@ const server = createServer((request, response) => {
   });
   request.on("end", () => {
     try {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-      assert(body && typeof body === "object" && !Array.isArray(body), "Captured Responses body is not an object");
+      const body = record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      assert(body, "Captured Responses body is not an object");
       if (!captureSettled) {
         captureSettled = true;
-        capturedResolve(body as Record<string, unknown>);
+        capturedResolve(body);
       }
       response.statusCode = 200;
       response.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -167,26 +181,12 @@ try {
     models?: Array<Record<string, unknown>>;
   };
   const debugHigh = debugCatalog.models?.find(model => model.slug === "chatgpt-web/high");
-  assert(debugHigh, "Configured Codex catalog did not expose chatgpt-web/high before planner capture");
-  assert(debugHigh.tool_mode === "code_mode_only",
+  assert(debugHigh?.tool_mode === "code_mode_only",
     `Configured chatgpt-web/high did not retain code_mode_only: ${JSON.stringify(debugHigh)}`);
-
-  const baselineFeatures = codeModeFeatureSummary(runCodex(codex, ["features", "list"], childEnv));
-  // 0.154 exposes the standalone host by default but keeps the JavaScript Code Mode engine behind
-  // the code_mode feature. Prior clean-config captures proved that model_info.tool_mode alone can
-  // still produce a request with no tools. This control run enables only the engine for this process;
-  // it does not mutate CODEX_HOME and therefore isolates the feature gate from the routed catalog.
-  const enabledFeatures = codeModeFeatureSummary(runCodex(
-    codex,
-    ["-c", "features.code_mode=true", "features", "list"],
-    childEnv,
-  ));
-  process.stdout.write(`NATIVE_CODE_MODE_PRECHECK tool_mode=${String(debugHigh.tool_mode)} baseline=${baselineFeatures} enabled=${enabledFeatures}\n`);
-  assert(/code_mode\s+under development\s+true/.test(enabledFeatures),
-    `Per-process code_mode override did not enable the engine: ${enabledFeatures}`);
+  assert(debugHigh.use_responses_lite === true,
+    `Configured chatgpt-web/high did not inherit Sol Responses Lite transport: ${JSON.stringify(debugHigh)}`);
 
   const child = spawn(codex, [
-    "-c", "features.code_mode=true",
     "exec",
     "--model", "chatgpt-web/high",
     "--skip-git-repo-check",
@@ -216,9 +216,8 @@ try {
   const body = await Promise.race([captured, timeout]);
 
   assert(body.model === "chatgpt-web/high", `Expected chatgpt-web/high request, got ${JSON.stringify(body.model)}`);
-  assert(Array.isArray(body.tools),
-    `Native Codex planner request has no tools array with code_mode enabled; precheck=${JSON.stringify({ tool_mode: debugHigh.tool_mode, baselineFeatures, enabledFeatures })}; tool_choice=${JSON.stringify(body.tool_choice)}; request_keys=${JSON.stringify(Object.keys(body))}; stderr=${JSON.stringify(childStderr.slice(-5000))}`);
-  const tools = body.tools as unknown[];
+  const modelTools = requestModelTools(body);
+  const tools = modelTools.tools;
   const names = tools.map(toolName).filter((name): name is string => Boolean(name));
   const exec = tools.find(tool => toolName(tool) === "exec") as Record<string, unknown> | undefined;
   const wait = tools.find(tool => toolName(tool) === "wait") as Record<string, unknown> | undefined;
@@ -235,10 +234,12 @@ try {
   }
   assert(body.tool_choice === "auto", `Expected native Codex tool_choice=auto, got ${JSON.stringify(body.tool_choice)}`);
   assert(body.parallel_tool_calls === true, `Expected native Codex parallel_tool_calls=true, got ${JSON.stringify(body.parallel_tool_calls)}`);
+  assert(modelTools.source === "additional_tools",
+    `Expected Sol-derived Responses Lite tool transport, got ${modelTools.source}`);
 
   const exit = await Promise.race([childExit, timeout]);
   assert(exit.code === 0, `Native Codex planner smoke exited ${exit.code ?? exit.signal}: stdout=${JSON.stringify(childStdout)} stderr=${JSON.stringify(childStderr)}`);
-  process.stdout.write(`NATIVE_CODE_MODE_PLANNER_SMOKE_OK tools=${describeTools(tools)}\n`);
+  process.stdout.write(`NATIVE_CODE_MODE_PLANNER_SMOKE_OK source=${modelTools.source} tools=${describeTools(tools)}\n`);
 } finally {
   await new Promise<void>(resolveClose => server.close(() => resolveClose()));
   try {
