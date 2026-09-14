@@ -543,7 +543,7 @@ test("mutating launcher operations are serialized before lifecycle changes begin
   assert.equal(fixture.invocation(), undefined);
 });
 
-function bridgeFixture({ active }) {
+function bridgeFixture({ active, staticCatalogActive = false }) {
   const calls = [];
   let routeActive = active;
   const supervisor = {
@@ -569,7 +569,7 @@ function bridgeFixture({ active }) {
     const action = args.join(" ");
     calls.push(action);
     if (action === "route status") {
-      return { stdout: JSON.stringify({ installed: true, active: routeActive, errors: [] }) };
+      return { stdout: JSON.stringify({ installed: true, active: routeActive, staticCatalogActive, errors: [] }) };
     }
     if (action === "route connect") {
       routeActive = true;
@@ -621,7 +621,7 @@ test("Windows startup repairs an active v10 route that is missing the managed st
 });
 
 test("launcher leaves an already connected route unchanged", async () => {
-  const fixture = bridgeFixture({ active: true });
+  const fixture = bridgeFixture({ active: true, staticCatalogActive: true });
   const result = await fixture.host.connectBridgeRoute();
   assert.equal(result.active, true);
   assert.deepEqual(fixture.calls, ["route status"]);
