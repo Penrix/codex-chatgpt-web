@@ -29,6 +29,7 @@ interface CommandExecutionOptions {
 interface BundledCatalogOptions {
   platform?: NodeJS.Platform;
   localAppData?: string;
+  userProfile?: string;
   tempRoot?: string;
   run?: (
     executable: string,
@@ -37,18 +38,38 @@ interface BundledCatalogOptions {
   ) => CommandResult;
 }
 
-export function findWindowsCodexExecutables(localAppData: string): string[] {
-  const binRoot = join(localAppData, "OpenAI", "Codex", "bin");
+function fileCandidate(path: string): string | undefined {
+  try {
+    return statSync(path).isFile() ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function findWindowsCodexExecutables(localAppData: string, userProfile?: string): string[] {
+  const preferred = [
+    // Official standalone installer. This is the normal native Windows CLI location and must win
+    // over Codex Desktop's private relocated copy so setup and verification target the CLI the user
+    // actually invokes from a terminal.
+    fileCandidate(join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe")),
+    // Official standalone package payload used by current installers. Keep this as a second native
+    // candidate for installations where the public bin entry is absent or has been relocated.
+    ...(userProfile
+      ? [fileCandidate(join(userProfile, ".codex", "packages", "standalone", "current", "bin", "codex.exe"))]
+      : []),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  const desktopBinRoot = join(localAppData, "OpenAI", "Codex", "bin");
   let entries;
   try {
-    entries = readdirSync(binRoot, { withFileTypes: true });
+    entries = readdirSync(desktopBinRoot, { withFileTypes: true });
   } catch {
-    return [];
+    entries = [];
   }
-  return entries
+  const desktop = entries
     .filter(entry => entry.isDirectory() && /^[a-f0-9]{12,64}$/i.test(entry.name))
     .map(entry => {
-      const executable = join(binRoot, entry.name, "codex.exe");
+      const executable = join(desktopBinRoot, entry.name, "codex.exe");
       try {
         const stat = statSync(executable);
         return stat.isFile() ? { executable, modifiedAt: stat.mtimeMs } : undefined;
@@ -59,6 +80,14 @@ export function findWindowsCodexExecutables(localAppData: string): string[] {
     .filter((candidate): candidate is { executable: string; modifiedAt: number } => Boolean(candidate))
     .sort((left, right) => right.modifiedAt - left.modifiedAt)
     .map(candidate => candidate.executable);
+
+  const seen = new Set<string>();
+  return [...preferred, ...desktop].filter(executable => {
+    const key = executable.toLocaleLowerCase("en-US");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function parseBundledCodexCatalog(stdout: string): BundledCodexCatalog | undefined {
@@ -103,18 +132,18 @@ export function loadBundledWindowsCodexCatalog(
 ): BundledCodexCatalog | undefined {
   const platform = options.platform ?? process.platform;
   const localAppData = options.localAppData ?? process.env.LOCALAPPDATA?.trim();
+  const userProfile = options.userProfile ?? process.env.USERPROFILE?.trim();
   if (platform !== "win32" || !localAppData) return undefined;
   const run = options.run ?? defaultRun;
   const tempRoot = options.tempRoot ?? tmpdir();
-  for (const executable of findWindowsCodexExecutables(localAppData)) {
+  for (const executable of findWindowsCodexExecutables(localAppData, userProfile)) {
     const bundled = catalogFromResult(run(executable, ["debug", "models", "--bundled"]));
     if (bundled) return bundled;
 
-    // Some Codex Desktop builds identify as the same codex-cli release but do not expose the
-    // --bundled debug flag. A plain `debug models` still falls back to the in-memory bundled
-    // catalog when online discovery is unavailable. Run it under a brand-new CODEX_HOME so it
-    // cannot inherit the user's openai_base_url, model_catalog_json, or ChatGPT auth state and
-    // therefore cannot recurse through the bridge we are currently trying to configure.
+    // Some Codex builds do not expose the --bundled debug flag. A plain `debug models` still falls
+    // back to the in-memory bundled catalog when online discovery is unavailable. Run it under a
+    // brand-new CODEX_HOME so it cannot inherit the user's openai_base_url, model_catalog_json, or
+    // ChatGPT auth state and therefore cannot recurse through the bridge we are configuring.
     const isolatedHome = mkdtempSync(join(tempRoot, "codex-web-gpt-catalog-"));
     try {
       const isolated = catalogFromResult(run(
