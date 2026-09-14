@@ -6,12 +6,14 @@ import { spawnSync } from "node:child_process";
 if (process.platform !== "win32") throw new Error("V7 route-repair smoke is Windows-only");
 const sourceCodex = resolve(process.argv[2] ?? "");
 if (!sourceCodex) throw new Error("Pass the official standalone codex.exe path");
+const sourceCodeModeHost = join(dirname(sourceCodex), "codex-code-mode-host.exe");
 
 const root = mkdtempSync(join(tmpdir(), "codex-web-gpt-v7-route-"));
 const codexHome = join(root, ".codex");
 const appHome = join(root, ".codex-chatgpt-web");
 const localAppData = join(root, "LocalAppData");
 const standalone = join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+const standaloneCodeModeHost = join(dirname(standalone), "codex-code-mode-host.exe");
 
 function runRouteStatus(): any {
   const result = spawnSync(process.execPath, ["run", "src/cli.ts", "route", "status"], {
@@ -30,6 +32,7 @@ function runRouteStatus(): any {
 try {
   mkdirSync(dirname(standalone), { recursive: true });
   copyFileSync(sourceCodex, standalone);
+  copyFileSync(sourceCodeModeHost, standaloneCodeModeHost);
   process.env.CODEX_HOME = codexHome;
   process.env.CODEX_CHATGPT_WEB_HOME = appHome;
   process.env.LOCALAPPDATA = localAppData;
