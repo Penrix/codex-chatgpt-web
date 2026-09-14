@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "./config";
 import { getConfigDir } from "./config";
@@ -21,10 +22,19 @@ interface CommandResult {
   stdout: string;
 }
 
+interface CommandExecutionOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
 interface BundledCatalogOptions {
   platform?: NodeJS.Platform;
   localAppData?: string;
-  run?: (executable: string, args: string[]) => CommandResult;
+  tempRoot?: string;
+  run?: (
+    executable: string,
+    args: string[],
+    options?: CommandExecutionOptions,
+  ) => CommandResult;
 }
 
 export function findWindowsCodexExecutables(localAppData: string): string[] {
@@ -63,19 +73,29 @@ export function parseBundledCodexCatalog(stdout: string): BundledCodexCatalog | 
   }
 }
 
-function defaultRun(executable: string, args: string[]): CommandResult {
+function defaultRun(
+  executable: string,
+  args: string[],
+  options: CommandExecutionOptions = {},
+): CommandResult {
   const result = spawnSync(executable, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 10_000,
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
+    env: options.env ?? process.env,
   });
   return {
     status: result.status,
     ...(result.error ? { error: result.error } : {}),
     stdout: result.stdout ?? "",
   };
+}
+
+function catalogFromResult(result: CommandResult): BundledCodexCatalog | undefined {
+  if (result.status !== 0 || result.error) return undefined;
+  return parseBundledCodexCatalog(result.stdout);
 }
 
 export function loadBundledWindowsCodexCatalog(
@@ -85,11 +105,27 @@ export function loadBundledWindowsCodexCatalog(
   const localAppData = options.localAppData ?? process.env.LOCALAPPDATA?.trim();
   if (platform !== "win32" || !localAppData) return undefined;
   const run = options.run ?? defaultRun;
+  const tempRoot = options.tempRoot ?? tmpdir();
   for (const executable of findWindowsCodexExecutables(localAppData)) {
-    const result = run(executable, ["debug", "models", "--bundled"]);
-    if (result.status !== 0 || result.error) continue;
-    const catalog = parseBundledCodexCatalog(result.stdout);
-    if (catalog) return catalog;
+    const bundled = catalogFromResult(run(executable, ["debug", "models", "--bundled"]));
+    if (bundled) return bundled;
+
+    // Some Codex Desktop builds identify as the same codex-cli release but do not expose the
+    // --bundled debug flag. A plain `debug models` still falls back to the in-memory bundled
+    // catalog when online discovery is unavailable. Run it under a brand-new CODEX_HOME so it
+    // cannot inherit the user's openai_base_url, model_catalog_json, or ChatGPT auth state and
+    // therefore cannot recurse through the bridge we are currently trying to configure.
+    const isolatedHome = mkdtempSync(join(tempRoot, "codex-web-gpt-catalog-"));
+    try {
+      const isolated = catalogFromResult(run(
+        executable,
+        ["debug", "models"],
+        { env: { ...process.env, CODEX_HOME: isolatedHome } },
+      ));
+      if (isolated) return isolated;
+    } finally {
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
   }
   return undefined;
 }
@@ -107,7 +143,7 @@ export function buildManagedWindowsCodexCatalog(
   const nativeCatalog = loadBundledWindowsCodexCatalog({ ...options, platform });
   if (!nativeCatalog) {
     throw new Error(
-      "Windows Codex model catalog is unavailable; expected the installed Codex CLI to support `debug models --bundled`",
+      "Windows Codex model catalog is unavailable; the installed Codex CLI returned no native catalog through bundled or isolated debug-model discovery",
     );
   }
   const merged = augmentNativeModelCatalog(nativeCatalog, config);
