@@ -115,6 +115,9 @@ jobs:
       - name: Test standalone CLI discovery and static catalog
         shell: pwsh
         run: bun test tests/codex-static-catalog.test.ts tests/codex-standalone-catalog.test.ts
+      - name: Test Windows managed tunnel connect boundary
+        shell: pwsh
+        run: bun test tests/tunnel.test.ts
       - name: Verify V7 route status and stale-journal repair
         shell: pwsh
         run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
