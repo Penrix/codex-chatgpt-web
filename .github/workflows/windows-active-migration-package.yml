@@ -1,0 +1,90 @@
+name: Windows active migration package
+
+on:
+  push:
+    branches: [fix/windows-codex-026903-static-catalog]
+    paths: [.github/workflows/windows-active-migration-package.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-codex-026903-static-catalog
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Typecheck bridge
+        run: bun run typecheck
+      - name: Verify old-active integration migration
+        run: node --test launcher/tests/runtime-host.test.cjs launcher/tests/runtime-install.test.cjs
+      - name: Run static catalog tests on Windows
+        run: bun test ./tests/codex-static-catalog.test.ts ./tests/native-model-catalog-fallback.test.ts ./tests/server-models.test.ts
+      - name: Verify generated catalog through official Codex 0.153.4
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $downloadDir = Join-Path $env:RUNNER_TEMP "official-codex-01534"
+          $extractDir = Join-Path $downloadDir "extract"
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+          gh release download rust-v0.153.4 --repo openai/codex --pattern "codex-x86_64-pc-windows-msvc.exe.zip" --dir $downloadDir
+          $archive = Get-ChildItem -LiteralPath $downloadDir -Filter "codex-x86_64-pc-windows-msvc.exe.zip" | Select-Object -First 1
+          if (-not $archive) { throw "Official Codex 0.153.4 Windows archive was not downloaded" }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extractDir -Force
+          $downloadedExe = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter "codex-x86_64-pc-windows-msvc.exe" | Select-Object -First 1
+          if (-not $downloadedExe) { throw "Official Codex executable was not found in the release archive" }
+
+          $desktopCliDir = Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\fd4c151a749f3ab4"
+          New-Item -ItemType Directory -Force -Path $desktopCliDir | Out-Null
+          $codexExe = Join-Path $desktopCliDir "codex.exe"
+          Copy-Item -LiteralPath $downloadedExe.FullName -Destination $codexExe -Force
+
+          $version = (& $codexExe --version) -join "`n"
+          if ($version -notmatch "0\.153\.4") { throw "Expected codex-cli 0.153.4, got: $version" }
+          $bundled = ((& $codexExe debug models --bundled) -join "`n") | ConvertFrom-Json
+          if (-not $bundled.models -or $bundled.models.Count -lt 1) { throw "Official bundled catalog is empty" }
+
+          $env:CODEX_CHATGPT_WEB_HOME = Join-Path $env:RUNNER_TEMP "codex-web-static-catalog-home"
+          $artifactPath = (& bun -e 'import { mkdirSync } from "node:fs"; import { dirname } from "node:path"; import { buildManagedWindowsCodexCatalog } from "./src/codex-bundled-catalog.ts"; import { defaultConfig } from "./src/config.ts"; const artifact = buildManagedWindowsCodexCatalog(defaultConfig()); if (!artifact) throw new Error("managed catalog was not generated"); mkdirSync(dirname(artifact.path), { recursive: true }); await Bun.write(artifact.path, artifact.data); process.stdout.write(artifact.path);').Trim()
+          if (-not (Test-Path -LiteralPath $artifactPath)) { throw "Managed catalog file was not written: $artifactPath" }
+          $generated = Get-Content -LiteralPath $artifactPath -Raw | ConvertFrom-Json
+          $generatedSlugs = @($generated.models | ForEach-Object { $_.slug })
+          if ($generatedSlugs -notcontains "gpt-5.6-sol") { throw "Generated catalog lost the native GPT-5.6 Sol row" }
+          if (-not ($generatedSlugs | Where-Object { $_ -like "chatgpt-web/*" } | Select-Object -First 1)) { throw "Generated catalog contains no ChatGPT Web rows" }
+
+          $codexHome = Join-Path $env:RUNNER_TEMP "codex-home-static-catalog"
+          New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
+          $escapedArtifactPath = $artifactPath.Replace('\', '\\')
+          Set-Content -LiteralPath (Join-Path $codexHome "config.toml") -Value "model_catalog_json = `"$escapedArtifactPath`"" -Encoding utf8
+          $env:CODEX_HOME = $codexHome
+          $effective = ((& $codexExe debug models) -join "`n") | ConvertFrom-Json
+          $effectiveSlugs = @($effective.models | ForEach-Object { $_.slug })
+          if ($effectiveSlugs -notcontains "gpt-5.6-sol") { throw "Official Codex did not load the native row from model_catalog_json" }
+          if (-not ($effectiveSlugs | Where-Object { $_ -like "chatgpt-web/*" } | Select-Object -First 1)) { throw "Official Codex did not load ChatGPT Web rows from model_catalog_json" }
+          Write-Host "official_codex_version=$version"
+          Write-Host "bundled_models=$($bundled.models.Count)"
+          Write-Host "effective_models=$($effective.models.Count)"
+          Write-Host "web_models=$(@($effectiveSlugs | Where-Object { $_ -like 'chatgpt-web/*' }).Count)"
+      - name: Build runtime bundle
+        run: bun run build
+      - name: Package Windows launcher
+        run: bun run app:package
+      - name: Smoke packaged Windows launcher
+        run: bun run app:smoke
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-windows-active-migration-fix
+          path: launcher/artifacts/*.exe
+          if-no-files-found: error
