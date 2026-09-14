@@ -34,10 +34,9 @@ function runCodex(codex: string, args: string[], env = process.env): string {
 }
 
 function nativeCatalog(codex: string): Record<string, unknown> {
-  const parsed = JSON.parse(runCodex(codex, ["debug", "models", "--bundled"])) as unknown;
-  const object = record(parsed);
-  assert(object, "Codex bundled catalog is not an object");
-  return object;
+  const parsed = record(JSON.parse(runCodex(codex, ["debug", "models", "--bundled"])));
+  assert(parsed, "Codex bundled catalog is not an object");
+  return parsed;
 }
 
 function toolName(tool: unknown): string | undefined {
@@ -50,18 +49,42 @@ function toolType(tool: unknown): string | undefined {
   return object && typeof object.type === "string" ? object.type : undefined;
 }
 
+function flattenModelTools(values: unknown[]): Record<string, unknown>[] {
+  const flattened: Record<string, unknown>[] = [];
+  for (const value of values) {
+    const tool = record(value);
+    if (!tool) continue;
+    if (tool.type === "namespace" && Array.isArray(tool.tools)) {
+      flattened.push(...flattenModelTools(tool.tools));
+      continue;
+    }
+    flattened.push(tool);
+  }
+  return flattened;
+}
+
 function describeTools(tools: unknown[]): string {
   return JSON.stringify(tools.map(tool => ({ type: toolType(tool), name: toolName(tool) })));
 }
 
-function requestModelTools(body: Record<string, unknown>): { tools: unknown[]; source: "top-level" | "additional_tools" } {
-  if (Array.isArray(body.tools)) return { tools: body.tools, source: "top-level" };
+function requestModelTools(body: Record<string, unknown>): {
+  tools: Record<string, unknown>[];
+  wireTools: Record<string, unknown>[];
+  source: "top-level" | "additional_tools";
+} {
+  if (Array.isArray(body.tools)) {
+    const wireTools = body.tools.map(record).filter((tool): tool is Record<string, unknown> => Boolean(tool));
+    return { tools: flattenModelTools(wireTools), wireTools, source: "top-level" };
+  }
   if (Array.isArray(body.input)) {
     const additional = body.input
       .map(record)
       .find(item => item?.type === "additional_tools");
     if (additional && Array.isArray(additional.tools)) {
-      return { tools: additional.tools, source: "additional_tools" };
+      const wireTools = additional.tools
+        .map(record)
+        .filter((tool): tool is Record<string, unknown> => Boolean(tool));
+      return { tools: flattenModelTools(wireTools), wireTools, source: "additional_tools" };
     }
   }
   throw new Error(
@@ -219,10 +242,10 @@ try {
   const modelTools = requestModelTools(body);
   const tools = modelTools.tools;
   const names = tools.map(toolName).filter((name): name is string => Boolean(name));
-  const exec = tools.find(tool => toolName(tool) === "exec") as Record<string, unknown> | undefined;
-  const wait = tools.find(tool => toolName(tool) === "wait") as Record<string, unknown> | undefined;
-  assert(exec, `Native CodeModeOnly planner did not advertise exec: ${describeTools(tools)}`);
-  assert(wait, `Native CodeModeOnly planner did not advertise wait: ${describeTools(tools)}`);
+  const exec = tools.find(tool => toolName(tool) === "exec");
+  const wait = tools.find(tool => toolName(tool) === "wait");
+  assert(exec, `Native CodeModeOnly planner did not advertise exec: wire=${describeTools(modelTools.wireTools)} flattened=${describeTools(tools)}`);
+  assert(wait, `Native CodeModeOnly planner did not advertise wait: wire=${describeTools(modelTools.wireTools)} flattened=${describeTools(tools)}`);
   assert(toolType(exec) === "custom", `Native exec is not a custom/freeform tool: ${JSON.stringify(exec)}`);
   assert(toolType(wait) === "function", `Native wait is not a function tool: ${JSON.stringify(wait)}`);
   assert(typeof exec.description === "string" && exec.description.includes("Run JavaScript code to orchestrate/compose tool calls"),
