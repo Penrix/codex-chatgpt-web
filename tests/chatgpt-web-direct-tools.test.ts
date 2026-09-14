@@ -46,6 +46,12 @@ function request(overrides: Partial<CodexParsedRequest["options"]> = {}): CodexP
   };
 }
 
+function directCatalog(text: string): { tools: Array<{ description: string }> } {
+  const match = text.match(/<codex_browser_tool_catalog_json>\n([\s\S]*?)\n<\/codex_browser_tool_catalog_json>/);
+  if (!match) throw new Error("Direct tool catalog block is missing");
+  return JSON.parse(match[1]!) as { tools: Array<{ description: string }> };
+}
+
 describe("ChatGPT Web direct tool protocol", () => {
   test("advertises exact native wire names and schemas without MCP capability handles", () => {
     const text = chatGptDirectToolProtocolLines(request()).join("\n");
@@ -74,7 +80,7 @@ describe("ChatGPT Web direct tool protocol", () => {
       options: { toolChoice: "auto", parallelToolCalls: true },
     };
     const text = chatGptDirectToolProtocolLines(parsed).join("\n");
-    expect(text).toContain(nativeExecDescription);
+    expect(directCatalog(text).tools[0]!.description).toBe(nativeExecDescription);
     expect(text).not.toContain("description truncated by browser transport");
     expect(text).not.toContain("omitted_native_tools");
     expect(text).not.toContain("exec_gateway");
