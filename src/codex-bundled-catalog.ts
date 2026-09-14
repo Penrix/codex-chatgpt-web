@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { type Dirent, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AppConfig } from "./config";
 import { getConfigDir } from "./config";
 import { augmentNativeModelCatalog } from "./model-catalog";
@@ -36,6 +36,11 @@ interface BundledCatalogOptions {
     args: string[],
     options?: CommandExecutionOptions,
   ) => CommandResult;
+}
+
+interface BundledCatalogSource {
+  catalog: BundledCodexCatalog;
+  executable: string;
 }
 
 function fileCandidate(path: string): string | undefined {
@@ -127,9 +132,9 @@ function catalogFromResult(result: CommandResult): BundledCodexCatalog | undefin
   return parseBundledCodexCatalog(result.stdout);
 }
 
-export function loadBundledWindowsCodexCatalog(
+function loadBundledWindowsCodexCatalogSource(
   options: BundledCatalogOptions = {},
-): BundledCodexCatalog | undefined {
+): BundledCatalogSource | undefined {
   const platform = options.platform ?? process.platform;
   const localAppData = options.localAppData ?? process.env.LOCALAPPDATA?.trim();
   const userProfile = options.userProfile ?? process.env.USERPROFILE?.trim();
@@ -138,7 +143,7 @@ export function loadBundledWindowsCodexCatalog(
   const tempRoot = options.tempRoot ?? tmpdir();
   for (const executable of findWindowsCodexExecutables(localAppData, userProfile)) {
     const bundled = catalogFromResult(run(executable, ["debug", "models", "--bundled"]));
-    if (bundled) return bundled;
+    if (bundled) return { catalog: bundled, executable };
 
     // Some Codex builds do not expose the --bundled debug flag. A plain `debug models` still falls
     // back to the in-memory bundled catalog when online discovery is unavailable. Run it under a
@@ -151,12 +156,18 @@ export function loadBundledWindowsCodexCatalog(
         ["debug", "models"],
         { env: { ...process.env, CODEX_HOME: isolatedHome } },
       ));
-      if (isolated) return isolated;
+      if (isolated) return { catalog: isolated, executable };
     } finally {
       rmSync(isolatedHome, { recursive: true, force: true });
     }
   }
   return undefined;
+}
+
+export function loadBundledWindowsCodexCatalog(
+  options: BundledCatalogOptions = {},
+): BundledCodexCatalog | undefined {
+  return loadBundledWindowsCodexCatalogSource(options)?.catalog;
 }
 
 export function getManagedCodexCatalogPath(): string {
@@ -169,13 +180,21 @@ export function buildManagedWindowsCodexCatalog(
 ): ManagedCodexCatalogArtifact | undefined {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32") return undefined;
-  const nativeCatalog = loadBundledWindowsCodexCatalog({ ...options, platform });
-  if (!nativeCatalog) {
+  const source = loadBundledWindowsCodexCatalogSource({ ...options, platform });
+  if (!source) {
     throw new Error(
       "Windows Codex model catalog is unavailable; the installed Codex CLI returned no native catalog through bundled or isolated debug-model discovery",
     );
   }
-  const merged = augmentNativeModelCatalog(nativeCatalog, config);
+  if (config.browserInteractionMode === "automatic" && config.solAvailable) {
+    const host = join(dirname(source.executable), "codex-code-mode-host.exe");
+    if (!fileCandidate(host)) {
+      throw new Error(
+        `Automatic ChatGPT Web High requires the native Codex Code Mode host, but the installed CLI is incomplete: ${source.executable}; expected sibling ${host}`,
+      );
+    }
+  }
+  const merged = augmentNativeModelCatalog(source.catalog, config);
   return {
     path: getManagedCodexCatalogPath(),
     data: `${JSON.stringify(merged, null, 2)}\n`,
