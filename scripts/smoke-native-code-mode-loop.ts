@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
@@ -135,6 +135,11 @@ const requests: Record<string, unknown>[] = [];
 let serverFailure: Error | undefined;
 let firstToolSource: "top-level" | "additional_tools" | undefined;
 
+const bundledRg = resolve(codex, "..", "..", "codex-path", "rg.exe");
+assert(existsSync(bundledRg), `Official Codex package is missing bundled rg.exe: ${bundledRg}`);
+const quotedRg = bundledRg.replace(/'/g, "''");
+const smokeCommand = `$rg = '${quotedRg}'; Write-Output ${marker}; Write-Output $rg; & $rg --version; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`;
+
 let secondRequestResolve!: (body: Record<string, unknown>) => void;
 let secondRequestReject!: (error: Error) => void;
 const secondRequest = new Promise<Record<string, unknown>>((resolveRequest, rejectRequest) => {
@@ -144,7 +149,7 @@ const secondRequest = new Promise<Record<string, unknown>>((resolveRequest, reje
 let secondRequestSettled = false;
 
 const code = [
-  `const result = await tools.exec_command({ cmd: ${JSON.stringify(`Write-Output ${marker}`)}, yield_time_ms: 10000 });`,
+  `const result = await tools.exec_command({ cmd: ${JSON.stringify(smokeCommand)}, login: false, yield_time_ms: 10000 });`,
   "text(JSON.stringify(result));",
 ].join("\n");
 
@@ -193,6 +198,7 @@ const server = createServer((request, response) => {
         assert(output, `Second native loop request did not contain custom_tool_call_output(${callId}): ${JSON.stringify(body.input)}`);
         const text = outputText(output.output);
         assert(text.includes(marker), `Native exec output did not contain nested exec_command marker: ${JSON.stringify(text)}`);
+        assert(/ripgrep/i.test(text), `Native exec output did not execute the bundled rg.exe: ${JSON.stringify(text)}`);
         assert(/exit[_ ]code/i.test(text), `Native exec output did not expose command completion: ${JSON.stringify(text)}`);
         if (!secondRequestSettled) {
           secondRequestSettled = true;
@@ -242,6 +248,9 @@ try {
     `model = "chatgpt-web/high"`,
     `model_provider = "native_loop"`,
     `model_catalog_json = ${tomlString(catalogPath)}`,
+    "",
+    "[windows]",
+    `sandbox = "unelevated"`,
     "",
     "[model_providers.native_loop]",
     `name = "Native Code Mode Loop"`,
