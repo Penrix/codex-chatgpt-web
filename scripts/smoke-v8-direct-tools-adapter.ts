@@ -12,7 +12,8 @@ const provider: CodexProviderConfig = {
   adapter: "chatgpt-web",
   baseUrl: `browser://v8-direct-tools-smoke-${process.pid}-${Date.now()}`,
   chatgptWeb: {
-    localToolsEnabled: true,
+    localToolsEnabled: false,
+    directToolsEnabled: true,
     solAvailable: true,
     proAvailable: false,
   },
