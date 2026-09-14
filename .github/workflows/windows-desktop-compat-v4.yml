@@ -1,0 +1,71 @@
+name: Windows Desktop compatibility v4
+
+on:
+  push:
+    branches: [fix/windows-codex-026903-static-catalog]
+    paths: [.github/workflows/windows-desktop-compat-v4.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-codex-026903-static-catalog
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Typecheck bridge
+        run: bun run typecheck
+      - name: Verify Desktop catalog fallback
+        run: bun test ./tests/codex-static-catalog.test.ts ./tests/native-model-catalog-fallback.test.ts ./tests/server-models.test.ts
+      - name: Verify setup browser refresh
+        run: node --test launcher/tests/browser-refresh-regression.test.cjs launcher/tests/browser-host.test.cjs launcher/tests/runtime-host.test.cjs launcher/tests/runtime-install.test.cjs
+      - name: Verify official Codex isolated debug models
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $downloadDir = Join-Path $env:RUNNER_TEMP "official-codex-01534-v4"
+          $extractDir = Join-Path $downloadDir "extract"
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+          gh release download rust-v0.153.4 --repo openai/codex --pattern "codex-x86_64-pc-windows-msvc.exe.zip" --dir $downloadDir
+          $archive = Get-ChildItem -LiteralPath $downloadDir -Filter "codex-x86_64-pc-windows-msvc.exe.zip" | Select-Object -First 1
+          if (-not $archive) { throw "Official Codex archive missing" }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extractDir -Force
+          $codexExe = (Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter "codex-x86_64-pc-windows-msvc.exe" | Select-Object -First 1).FullName
+          if (-not $codexExe) { throw "Official Codex executable missing" }
+          $isolatedHome = Join-Path $env:RUNNER_TEMP "isolated-codex-home-v4"
+          New-Item -ItemType Directory -Force -Path $isolatedHome | Out-Null
+          $oldHome = $env:CODEX_HOME
+          try {
+            $env:CODEX_HOME = $isolatedHome
+            $catalogText = (& $codexExe debug models 2>$null) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "isolated debug models exited with $LASTEXITCODE" }
+            $catalog = $catalogText | ConvertFrom-Json
+            if (-not $catalog.models -or $catalog.models.Count -lt 1) { throw "isolated debug models returned no native models" }
+            Write-Host "isolated_native_models=$($catalog.models.Count)"
+          } finally {
+            $env:CODEX_HOME = $oldHome
+          }
+      - name: Build runtime bundle
+        run: bun run build
+      - name: Package Windows launcher
+        run: bun run app:package
+      - name: Smoke packaged Windows launcher
+        run: bun run app:smoke
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-windows-desktop-compat-v4
+          path: launcher/artifacts/*.exe
+          if-no-files-found: error
