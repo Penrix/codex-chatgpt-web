@@ -38,24 +38,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $release = Invoke-RestMethod 'https://api.github.com/repos/openai/codex/releases/tags/rust-v0.154.0'
-          $asset = $release.assets | Where-Object { $_.name -match '^codex.*x86_64-pc-windows-msvc' } | Select-Object -First 1
-          if (-not $asset) { throw 'Official Windows x64 Codex CLI asset was not found in rust-v0.154.0' }
-          $download = Join-Path $env:RUNNER_TEMP $asset.name
-          Invoke-WebRequest $asset.browser_download_url -OutFile $download
-          $extract = Join-Path $env:RUNNER_TEMP 'codex-official-0.154.0'
-          New-Item -ItemType Directory -Force $extract | Out-Null
-          if ($asset.name.EndsWith('.zip')) {
-            Expand-Archive $download -DestinationPath $extract -Force
-          } elseif ($asset.name.EndsWith('.tar.gz')) {
-            tar -xzf $download -C $extract
-          } else {
-            Copy-Item $download (Join-Path $extract 'codex.exe')
-          }
-          $source = Get-ChildItem $extract -Recurse -Filter 'codex.exe' | Select-Object -First 1
-          if (-not $source) { throw "Downloaded asset $($asset.name) did not contain codex.exe" }
+          $asset = $release.assets | Where-Object { $_.name -eq 'codex-x86_64-pc-windows-msvc.exe' } | Select-Object -First 1
+          if (-not $asset) { throw 'Official codex-x86_64-pc-windows-msvc.exe was not found in rust-v0.154.0' }
           $target = Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin\codex.exe'
           New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
-          Copy-Item $source.FullName $target -Force
+          Invoke-WebRequest $asset.browser_download_url -OutFile $target
+          $actual = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = 'be96b992178b1e467c225800da0d65f2c86d5eba1ef0b14632f65db381cbdfde'
+          if ($actual -ne $expected) { throw "Official Codex CLI SHA-256 mismatch: $actual" }
           & $target --version
       - name: Verify real 0.154.0 standalone catalog discovery and merge
         shell: pwsh
