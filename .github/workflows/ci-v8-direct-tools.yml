@@ -16,6 +16,9 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Apply V8 live runtime takeover hotfix
+        shell: pwsh
+        run: node scripts/apply-v8-live-runtime-takeover-hotfix.cjs
       - name: Prepare official standalone Codex CLI 0.154.0
         shell: pwsh
         run: |
@@ -73,6 +76,7 @@ jobs:
           $worker = Get-Content src/adapters/chatgpt-web/browser-worker.ts -Raw
           $config = Get-Content src/config.ts -Raw
           $runtime = Get-Content launcher/electron/runtime.cjs -Raw
+          $supervisor = Get-Content launcher/electron/runtime-supervisor.cjs -Raw
           if (-not $prompt.Contains('chatGptDirectToolProtocolLines(parsed)')) { throw "Direct tool prompt contract missing from committed source" }
           if (-not $adapter.Contains('parseChatGptDirectToolOutcome(rawAnswer, parsed, roundKey)')) { throw "Direct response parser missing from committed source" }
           if (-not $adapter.Contains('`${executionNamespace}:direct:${roundKey}`')) { throw "Round-local replay identity missing" }
@@ -82,6 +86,9 @@ jobs:
           if (-not $config.Contains('localToolsEnabled: manual && config.mode === "full"')) { throw "Automatic stale Full config can still expose connector tools" }
           if (-not $config.Contains('directToolsEnabled: !manual && config.solAvailable')) { throw "Automatic Sol direct tool projection missing" }
           if (-not $runtime.Contains('automaticDirectMigrationRequired')) { throw "Automatic Full-to-direct migration missing" }
+          if (-not $runtime.Contains('takeOverExternalRuntime: externalAutomaticDirectMigration')) { throw "External Automatic runtime takeover gate missing" }
+          if (-not $supervisor.Contains('stopOrphanedConfiguredRuntime(config)')) { throw "Authenticated orphaned runtime recovery missing" }
+          if (-not $supervisor.Contains('prepareExternalMigrationFromConfig(config)')) { throw "External runtime migration takeover missing" }
           if (-not $worker.Contains('chatGptConnectorAttachmentMode(localTools, reuseConnector)')) { throw "Browser connector guard unexpectedly changed" }
           Write-Host "V8_COMMITTED_DIRECT_TOOLS_SOURCE_BOUNDARIES_OK"
       - name: Smoke browser-only capability and Full migration
@@ -90,6 +97,9 @@ jobs:
       - name: Smoke production adapter direct tool handoff without MCP
         shell: pwsh
         run: bun run scripts/smoke-v8-direct-tools-adapter.ts
+      - name: Smoke authenticated live runtime takeover
+        shell: pwsh
+        run: node scripts/smoke-v8-live-runtime-takeover.cjs
       - name: Verify V7 route status and stale-journal repair
         shell: pwsh
         run: bun run scripts/smoke-v7-route-repair.ts "$env:CODEX_SMOKE_CLI"
