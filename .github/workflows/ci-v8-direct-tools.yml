@@ -48,6 +48,9 @@ jobs:
       - name: Capture native Codex Code Mode planner surface
         shell: pwsh
         run: bun run scripts/smoke-native-code-mode-planner.ts "$env:CODEX_SMOKE_CLI"
+      - name: Exercise native Codex Code Mode execution loop
+        shell: pwsh
+        run: bun run scripts/smoke-native-code-mode-loop.ts "$env:CODEX_SMOKE_CLI"
       - name: Test route-aware catalog and direct browser tool protocol
         shell: pwsh
         run: bun test tests/model-catalog.test.ts tests/model-catalog-route-template.test.ts tests/chatgpt-web-direct-tools.test.ts tests/chatgpt-web-direct-capability.test.ts tests/responses-lite-tools.test.ts
