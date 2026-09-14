@@ -34,14 +34,16 @@ describe("browser-only direct tool capability", () => {
     expect(mode.localTools).toBe(false);
   });
 
-  test("explicit Full mode remains connector-backed instead of direct", () => {
+  test("stale Automatic Full mode still uses direct tools instead of a connector", () => {
     const automatic = defaultConfig("full");
     automatic.browserInteractionMode = "automatic";
     automatic.solAvailable = true;
     const automaticProvider = providerConfig(automatic);
-    expect(automaticProvider.chatgptWeb?.localToolsEnabled).toBe(true);
-    expect(automaticProvider.chatgptWeb?.directToolsEnabled).toBe(false);
+    expect(automaticProvider.chatgptWeb?.localToolsEnabled).toBe(false);
+    expect(automaticProvider.chatgptWeb?.directToolsEnabled).toBe(true);
+  });
 
+  test("Manual Zero Risk Full mode remains connector-backed", () => {
     const manual = defaultConfig("full");
     manual.browserInteractionMode = "manual";
     manual.appName = ZERO_RISK_CHATGPT_CONNECTOR_NAME;
