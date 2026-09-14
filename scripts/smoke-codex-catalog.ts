@@ -54,6 +54,7 @@ try {
       supported_in_api?: boolean;
       visibility?: string;
       priority?: number;
+      tool_mode?: string | null;
     }>;
   };
   const web = catalog.models?.filter(model => model.slug?.startsWith("chatgpt-web/")) ?? [];
@@ -68,10 +69,15 @@ try {
     throw new Error(`Codex did not preserve the fixed ChatGPT Web model contract: ${JSON.stringify(actual)}`);
   }
   const nativeSol = catalog.models?.find(model => model.slug === "gpt-5.6-sol");
-  const webPro = catalog.models?.find(model => model.slug === "chatgpt-web/pro");
-  if (nativeSol?.multi_agent_version !== "v1" || webPro?.multi_agent_version !== "v1") {
+  const webHigh = catalog.models?.find(model => model.slug === "chatgpt-web/high");
+  if (nativeSol?.multi_agent_version !== "v1" || webHigh?.multi_agent_version !== "v1") {
     throw new Error(
-      `Codex did not preserve Compatibility V1 catalog metadata: ${JSON.stringify({ nativeSol, webPro })}`,
+      `Codex did not preserve Compatibility V1 catalog metadata: ${JSON.stringify({ nativeSol, webHigh })}`,
+    );
+  }
+  if (webHigh?.tool_mode !== nativeSol?.tool_mode || webHigh?.tool_mode !== "code_mode_only") {
+    throw new Error(
+      `Automatic Sol did not preserve the native CodeModeOnly surface: ${JSON.stringify({ nativeSol, webHigh })}`,
     );
   }
   const features = runCodex(["features", "list"], isolatedEnv).stdout;
@@ -79,18 +85,29 @@ try {
     || !/^multi_agent_v2\s+stable\s+false$/m.test(features)) {
     throw new Error(`Codex did not load the Compatibility V1 feature override:\n${features}`);
   }
+
+  // Codex 0.154 exposes at most five picker-visible model overrides in spawn_agent, in the model
+  // manager's native priority order. New native rows such as Astra must not be displaced merely to
+  // reserve four Web slots. The invariant owned here is narrower: preserve the official native
+  // prefix, keep Sol delegatable, and ensure the user's primary Web High route remains reachable.
   const spawnOverrides = (catalog.models ?? [])
     .filter(model => model.supported_in_api === true && model.visibility === "list")
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  const expectedWebSpawnOverrides = CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug);
-  const nativeSpawnOverride = spawnOverrides[0];
+  const nativePickerPrefix = (catalog.models ?? [])
+    .filter(model => model.supported_in_api === true
+      && model.visibility === "list"
+      && !model.slug?.startsWith("chatgpt-web/"))
+    .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, Math.min(5, spawnOverrides.length))
+    .map(model => model.slug);
+  const actualNativePrefix = spawnOverrides.slice(0, nativePickerPrefix.length);
   if (spawnOverrides.length !== 5
-    || !nativeSpawnOverride
-    || nativeSpawnOverride.startsWith("chatgpt-web/")
-    || JSON.stringify(spawnOverrides.slice(1)) !== JSON.stringify(expectedWebSpawnOverrides)) {
-    throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);
+    || JSON.stringify(actualNativePrefix) !== JSON.stringify(nativePickerPrefix)
+    || !spawnOverrides.includes("gpt-5.6-sol")
+    || !spawnOverrides.includes("chatgpt-web/high")) {
+    throw new Error(`Codex did not preserve the bounded native-first V1 subagent roster: ${JSON.stringify({ spawnOverrides, nativePickerPrefix })}`);
   }
   process.stdout.write("NATIVE_CODEX_CATALOG_SMOKE_OK\n");
 } finally {
