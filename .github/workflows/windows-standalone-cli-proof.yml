@@ -37,12 +37,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $release = Invoke-RestMethod 'https://api.github.com/repos/openai/codex/releases/tags/rust-v0.154.0'
-          $asset = $release.assets | Where-Object { $_.name -eq 'codex-x86_64-pc-windows-msvc.exe' } | Select-Object -First 1
-          if (-not $asset) { throw 'Official codex-x86_64-pc-windows-msvc.exe was not found in rust-v0.154.0' }
+          $url = 'https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-x86_64-pc-windows-msvc.exe'
           $target = Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin\codex.exe'
           New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
-          Invoke-WebRequest $asset.browser_download_url -OutFile $target
+          Invoke-WebRequest $url -OutFile $target
           $actual = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
           $expected = 'be96b992178b1e467c225800da0d65f2c86d5eba1ef0b14632f65db381cbdfde'
           if ($actual -ne $expected) { throw "Official Codex CLI SHA-256 mismatch: $actual" }
