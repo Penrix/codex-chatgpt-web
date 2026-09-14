@@ -256,7 +256,9 @@ try {
     assert(!names.includes(forbidden), `Native CodeModeOnly planner leaked direct top-level ${forbidden}: ${describeTools(tools)}`);
   }
   assert(body.tool_choice === "auto", `Expected native Codex tool_choice=auto, got ${JSON.stringify(body.tool_choice)}`);
-  assert(body.parallel_tool_calls === true, `Expected native Codex parallel_tool_calls=true, got ${JSON.stringify(body.parallel_tool_calls)}`);
+  // Responses Lite intentionally serializes the Code Mode orchestrator as a single model-level call;
+  // concurrency happens inside its JavaScript via Promise.all rather than parallel Responses calls.
+  assert(body.parallel_tool_calls === false, `Expected native Code Mode Responses Lite parallel_tool_calls=false, got ${JSON.stringify(body.parallel_tool_calls)}`);
   assert(modelTools.source === "additional_tools",
     `Expected Sol-derived Responses Lite tool transport, got ${modelTools.source}`);
 
