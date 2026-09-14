@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -63,6 +63,43 @@ test("reads Codex's bundled JSON through the installed CLI contract", () => {
     expect(catalog).toEqual(nativeCatalog);
   } finally {
     rmSync(localAppData, { recursive: true, force: true });
+  }
+});
+
+test("falls back to isolated debug models when the Desktop CLI lacks --bundled", () => {
+  const localAppData = mkdtempSync(join(tmpdir(), "codex-static-catalog-"));
+  const tempRoot = mkdtempSync(join(tmpdir(), "codex-static-fallback-"));
+  let isolatedHome = "";
+  const calls: string[] = [];
+  try {
+    const executable = join(localAppData, "OpenAI", "Codex", "bin", "fd4c151a749f3ab4", "codex.exe");
+    mkdirSync(dirname(executable), { recursive: true });
+    writeFileSync(executable, "");
+    const catalog = loadBundledWindowsCodexCatalog({
+      platform: "win32",
+      localAppData,
+      tempRoot,
+      run: (candidate, args, options) => {
+        expect(candidate).toBe(executable);
+        calls.push(args.join(" "));
+        if (args.join(" ") === "debug models --bundled") {
+          return { status: 2, stdout: "" };
+        }
+        expect(args).toEqual(["debug", "models"]);
+        isolatedHome = options?.env?.CODEX_HOME ?? "";
+        expect(isolatedHome).not.toBe("");
+        expect(isolatedHome).not.toBe(process.env.CODEX_HOME ?? "");
+        expect(existsSync(isolatedHome)).toBe(true);
+        return { status: 0, stdout: JSON.stringify(nativeCatalog) };
+      },
+    });
+    expect(catalog).toEqual(nativeCatalog);
+    expect(calls).toEqual(["debug models --bundled", "debug models"]);
+    expect(isolatedHome).not.toBe("");
+    expect(existsSync(isolatedHome)).toBe(false);
+  } finally {
+    rmSync(localAppData, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
