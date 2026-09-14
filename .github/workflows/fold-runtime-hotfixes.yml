@@ -1,5 +1,6 @@
 name: Fold runtime hotfixes
 
+# One-shot migration: remove this workflow after the folded source commit lands.
 on:
   push:
     branches:
