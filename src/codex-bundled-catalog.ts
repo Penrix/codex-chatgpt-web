@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { type Dirent, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "./config";
@@ -60,7 +60,7 @@ export function findWindowsCodexExecutables(localAppData: string, userProfile?: 
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   const desktopBinRoot = join(localAppData, "OpenAI", "Codex", "bin");
-  let entries;
+  let entries: Dirent[];
   try {
     entries = readdirSync(desktopBinRoot, { withFileTypes: true });
   } catch {
