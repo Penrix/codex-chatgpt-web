@@ -177,7 +177,7 @@ describe("ChatGPT Web direct tool protocol", () => {
       '{"kind":"tool_calls","tool_calls":[{"name":"apply_patch","arguments":{"input":"x"}}]}',
       request({ toolChoice: { name: "read_file" } }),
       "round-e",
-    )).toThrow("outside the active tool_choice");
+    )).toThrow("unavailable Codex tool");
   });
 
   test("enforces required and non-parallel tool policies", () => {
