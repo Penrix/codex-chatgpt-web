@@ -24,7 +24,6 @@ export interface WebCodexContinuityBinding {
   goalId: string;
   workflowSessionId: string;
   goalRevision: number;
-  objective: string;
   createdAt: string;
   updatedAt: string;
   adoptedFromTaskId?: string;
@@ -185,7 +184,6 @@ function parseState(raw: string, path: string): WebCodexContinuityState {
       || typeof binding.goalRevision !== "number"
       || !Number.isSafeInteger(binding.goalRevision)
       || binding.goalRevision < 1
-      || typeof binding.objective !== "string"
       || typeof binding.createdAt !== "string"
       || typeof binding.updatedAt !== "string"
       || (binding.adoptedFromTaskId !== undefined && typeof binding.adoptedFromTaskId !== "string")
@@ -202,19 +200,30 @@ export function loadWebCodexContinuityConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): WebCodexContinuityConfig | undefined {
   const baseUrl = env.CODEX_CHATGPT_WEB_WEBCODEX_URL?.trim();
-  const token = env.CODEX_CHATGPT_WEB_WEBCODEX_TOKEN?.trim();
+  const tokenFile = env.CODEX_CHATGPT_WEB_WEBCODEX_TOKEN_FILE?.trim();
   const project = env.CODEX_CHATGPT_WEB_WEBCODEX_PROJECT?.trim();
-  const present = [baseUrl, token, project].filter(Boolean).length;
+  const present = [baseUrl, tokenFile, project].filter(Boolean).length;
   if (present === 0) return undefined;
   if (present !== 3) {
     throw new WebCodexContinuityError(
-      "WebCodex continuity requires CODEX_CHATGPT_WEB_WEBCODEX_URL, CODEX_CHATGPT_WEB_WEBCODEX_TOKEN, and CODEX_CHATGPT_WEB_WEBCODEX_PROJECT together",
+      "WebCodex continuity requires CODEX_CHATGPT_WEB_WEBCODEX_URL, CODEX_CHATGPT_WEB_WEBCODEX_TOKEN_FILE, and CODEX_CHATGPT_WEB_WEBCODEX_PROJECT together",
       "invalid_config",
     );
   }
+  const tokenPath = resolve(tokenFile!);
+  let token: string;
+  try {
+    token = readFileSync(tokenPath, "utf8").trim();
+  } catch (error) {
+    throw new WebCodexContinuityError(
+      `Could not read WebCodex continuity token file ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`,
+      "invalid_config",
+    );
+  }
+  if (!token) throw new WebCodexContinuityError("WebCodex continuity token file is empty", "invalid_config");
   return {
     baseUrl: normalizedBaseUrl(baseUrl!),
-    token: token!,
+    token,
     project: project!,
     statePath: resolve(statePath),
   };
@@ -310,7 +319,6 @@ export class WebCodexContinuityBridge {
       goalId,
       workflowSessionId,
       goalRevision: revision,
-      objective,
       createdAt: now,
       updatedAt: now,
     };
