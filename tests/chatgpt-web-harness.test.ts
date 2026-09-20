@@ -454,6 +454,132 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("retains Responses relay history without replaying system prompts or tool schemas", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-retained-relay-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-retained-relay-${Date.now()}`,
+      chatgptWeb: {
+        browserHost: "launcher",
+        browserHostDescriptorPath: join(tempRoot, "retained-relay-launcher.json"),
+        brokerSocketPath: socketPath,
+        localToolsEnabled: false,
+        responsesToolRelayEnabled: true,
+        solAvailable: true,
+        extraHighAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const preparedPrompts: string[] = [];
+    const conversationKeys: string[] = [];
+    const seenKeys = new Set<string>();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const key = turn.conversationKey;
+      if (!key) throw new Error("relay turn was not assigned a retained conversation key");
+      const reused = seenKeys.has(key);
+      const prepared = reused ? await turn.prepareResume!() : await turn.prepare();
+      preparedPrompts.push(prepared.text);
+      conversationKeys.push(key);
+      seenKeys.add(key);
+      prepared.release();
+      return `Relay answer ${preparedPrompts.length}`;
+    };
+
+    const makeContinuation = (
+      prior: CodexParsedRequest,
+      turnId: string,
+      assistant: string,
+      user: string,
+    ): CodexParsedRequest => {
+      const next = parsed();
+      next.context.systemPrompt = [...(prior.context.systemPrompt ?? [])];
+      next.context.tools = [...(prior.context.tools ?? [])];
+      next.context.messages = [
+        ...prior.context.messages,
+        { role: "assistant", content: [{ type: "text", text: assistant }], timestamp: 10 },
+        { role: "user", content: user, timestamp: 11 },
+      ];
+      const raw = prior._rawBody as { input: unknown[] };
+      next._rawBody = {
+        prompt_cache_key: "thread_test_123",
+        client_metadata: {
+          "x-codex-turn-metadata": JSON.stringify({
+            thread_id: "thread_test_123",
+            turn_id: turnId,
+          }),
+        },
+        input: [
+          ...structuredClone(raw.input),
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: assistant }],
+          },
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: user }],
+            internal_chat_message_metadata_passthrough: { turn_id: turnId },
+          },
+        ],
+      };
+      return next;
+    };
+
+    const first = rawWireRequest(environmentXml);
+    first.context.systemPrompt = ["stable relay system contract"];
+    const second = makeContinuation(first, "turn_test_relay_2", "Relay answer 1", "Continue without replaying history");
+
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      await adapter.runTurn!(first, { headers: new Headers() }, () => {});
+      await adapter.runTurn!(second, { headers: new Headers() }, () => {});
+
+      expect(conversationKeys[1]).toBe(conversationKeys[0]);
+      expect(preparedPrompts[0]).toContain("stable relay system contract");
+      expect(preparedPrompts[0]).toContain("<codex_native_tools_json>");
+      expect(preparedPrompts[0]).toContain('"wire_name":"exec_command"');
+      expect(preparedPrompts[1]).toContain("Continue without replaying history");
+      expect(preparedPrompts[1]).not.toContain("Relay answer 1");
+      expect(preparedPrompts[1]).not.toContain("stable relay system contract");
+      expect(preparedPrompts[1]).not.toContain("<codex_native_tools_json>");
+      expect(preparedPrompts[1].length).toBeLessThan(preparedPrompts[0].length);
+
+      const changedCatalog = makeContinuation(
+        second,
+        "turn_test_relay_3",
+        "Relay answer 2",
+        "Continue after tool catalog change",
+      );
+      changedCatalog.context.tools = [
+        ...(changedCatalog.context.tools ?? []),
+        { name: "new_local_tool", description: "New local tool", parameters: { type: "object" } },
+      ];
+      await adapter.runTurn!(changedCatalog, { headers: new Headers() }, () => {});
+      expect(conversationKeys[2]).not.toBe(conversationKeys[1]);
+      expect(preparedPrompts[2]).toContain("<codex_native_tools_json>");
+      expect(preparedPrompts[2]).toContain('"wire_name":"new_local_tool"');
+
+      const changedSystem = makeContinuation(
+        changedCatalog,
+        "turn_test_relay_4",
+        "Relay answer 3",
+        "Continue after system change",
+      );
+      changedSystem.context.systemPrompt = ["changed relay system contract"];
+      await adapter.runTurn!(changedSystem, { headers: new Headers() }, () => {});
+      expect(conversationKeys[3]).not.toBe(conversationKeys[2]);
+      expect(preparedPrompts[3]).toContain("changed relay system contract");
+      expect(preparedPrompts[3]).toContain("<codex_native_tools_json>");
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      chatGptTurnSessions.clear();
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("closing a browser trace terminates the active adapter turn and blocks tab resurrection", async () => {
     const socketPath = brokerTestEndpoint(`cgw-close-trace-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {

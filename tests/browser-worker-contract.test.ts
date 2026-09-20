@@ -695,6 +695,85 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   }
 });
 
+test("browser send accepts an owned successful backend response before React mounts a turn", async () => {
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://backend-acceptance-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    activeComposer(page: Page): Promise<unknown>;
+    waitForSubmissionAcceptedWithRecovery(
+      page: Page,
+      baseline: unknown,
+      signal?: AbortSignal,
+    ): Promise<"user_turn">;
+    sendAttachedPrompt(
+      page: Page,
+      baseline: unknown,
+      capture?: (checkpoint: string) => Promise<void>,
+      signal?: AbortSignal,
+      progress?: ChatGptExternalTurnProgress,
+      lifecycle?: { onSendActivated(): Promise<void>; onSubmitted(): void },
+      tracker?: ChatGptCompletionTracker,
+      recover?: unknown,
+      waitForBackendAcceptance?: (signal?: AbortSignal) => Promise<void>,
+    ): Promise<string>;
+  };
+  const hidden = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const page = {
+    isClosed: () => false,
+    locator: () => hidden,
+  } as unknown as Page;
+  let presses = 0;
+  const sendButton = {
+    waitFor: async () => {},
+    isEnabled: async () => true,
+    press: async () => { presses += 1; },
+  };
+  const originalActiveComposer = worker.activeComposer;
+  const originalWaitForSubmissionAcceptedWithRecovery = worker.waitForSubmissionAcceptedWithRecovery;
+  try {
+    worker.activeComposer = async () => ({
+      locator: () => ({ getByTestId: () => sendButton }),
+    });
+    worker.waitForSubmissionAcceptedWithRecovery = async (_page, _baseline, signal) => (
+      await new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(new DOMException("cancelled losing DOM acceptance", "AbortError"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      })
+    );
+
+    const lifecycle: string[] = [];
+    const evidence = await worker.sendAttachedPrompt(
+      page,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      {
+        onSendActivated: async () => { lifecycle.push("activated"); },
+        onSubmitted: () => { lifecycle.push("submitted"); },
+      },
+      undefined,
+      undefined,
+      async () => {},
+    );
+
+    expect(evidence).toBe("backend_response");
+    expect(presses).toBe(1);
+    expect(lifecycle).toEqual(["activated", "submitted"]);
+  } finally {
+    worker.activeComposer = originalActiveComposer;
+    worker.waitForSubmissionAcceptedWithRecovery = originalWaitForSubmissionAcceptedWithRecovery;
+  }
+});
+
 test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -2636,6 +2715,7 @@ test("only a size rejection of the current owned browser submission is non-retry
   }
   expect(bodyReads).toBe(0);
   const successful = makeRequest(); page.emit("request", successful); respond(successful, "message_length_exceeds_limit", 200);
+  await expect(observer.waitForAcceptance()).resolves.toBeUndefined();
   const unfamiliar = makeRequest(); page.emit("request", unfamiliar); respond(unfamiliar, "unknown_error");
   expect(await observer.failure()).toBeUndefined();
   const current = makeRequest(); page.emit("request", current); respond(current);

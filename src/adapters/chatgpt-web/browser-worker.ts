@@ -815,6 +815,8 @@ export class ChatGptSubmissionRejectionObserver {
   private page?: Page;
   private readonly requests = new Set<Request>();
   private checks: Array<Promise<ChatGptWebAdapterError | undefined>> = [];
+  private accepted?: Promise<void>;
+  private resolveAccepted?: () => void;
 
   private readonly onRequest = (request: Request): void => {
     if (!this.page || request.method() !== "POST"
@@ -824,25 +826,38 @@ export class ChatGptSubmissionRejectionObserver {
   };
 
   private readonly onResponse = (response: Response): void => {
-    if (!this.requests.delete(response.request()) || response.status() !== 413
-      || !response.headers()["content-type"]?.includes("application/json")) return;
+    if (!this.requests.delete(response.request())) return;
+    const status = response.status();
+    // The exact owned conversation POST reached ChatGPT successfully. This is authoritative
+    // submission evidence even if React has not mounted the new user/assistant turn yet.
+    if (status >= 200 && status < 300) {
+      this.resolveAccepted?.();
+      return;
+    }
+    if (status !== 413 || !response.headers()["content-type"]?.includes("application/json")) return;
     this.checks.push(withChatGptBrowserObservationTimeout(response.json(), 3_000)
       .then(body => body?.detail?.code === "message_length_exceeds_limit"
         ? new ChatGptWebAdapterError(
           "ChatGPT rejected this message because it exceeds the selected mode's input-size limit. Compact the task before retrying.",
           { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
         ) : undefined)
-      // Unreadable or unfamiliar responses do not establish a size rejection. The normal
-      // bound-response DOM error remains authoritative in that case.
       .catch(() => undefined));
   };
 
   begin(page: Page): void {
     this.dispose();
     this.checks = [];
+    this.accepted = new Promise<void>(resolveAccepted => {
+      this.resolveAccepted = resolveAccepted;
+    });
     this.page = page;
     page.on("request", this.onRequest);
     page.on("response", this.onResponse);
+  }
+
+  async waitForAcceptance(signal?: AbortSignal): Promise<void> {
+    if (!this.accepted) throw new Error("ChatGPT submission observer has not started");
+    await withBrowserTurnAbort(this.accepted, signal);
   }
 
   async failure(): Promise<ChatGptWebAdapterError | undefined> {
@@ -854,6 +869,8 @@ export class ChatGptSubmissionRejectionObserver {
     this.page?.off("response", this.onResponse);
     this.page = undefined;
     this.requests.clear();
+    this.accepted = undefined;
+    this.resolveAccepted = undefined;
   }
 }
 
@@ -1342,7 +1359,7 @@ export function chatGptTurnIsComplete(state: {
     && state.completionActionVisible;
 }
 
-export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
+export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call" | "backend_response";
 
 export function chatGptSubmissionEvidence(state: {
   initialTurnIdentities: readonly string[];
@@ -3519,6 +3536,7 @@ export class ChatGptBrowserWorker {
     submissionLifecycle?: Pick<BrowserTurn, "onSendActivated" | "onSubmitted">,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    waitForBackendAcceptance?: (signal?: AbortSignal) => Promise<void>,
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
     const sendButton = composer
@@ -3550,17 +3568,31 @@ export class ChatGptBrowserWorker {
       // submitted the message; semantic submission evidence below remains the authority.
       timeout: 0,
     });
-    const evidence = await this.waitForSubmissionAcceptedWithRecovery(
-      page,
-      baseline,
-      abortSignal,
-      externalProgress,
-      initialToolBatchRevision,
-      completionTracker,
-      recoverObservation,
-    );
-    submissionLifecycle?.onSubmitted?.();
-    return evidence;
+    const acceptanceAbort = new AbortController();
+    const acceptanceSignal = abortSignal
+      ? AbortSignal.any([abortSignal, acceptanceAbort.signal])
+      : acceptanceAbort.signal;
+    try {
+      const domAcceptance = this.waitForSubmissionAcceptedWithRecovery(
+        page,
+        baseline,
+        acceptanceSignal,
+        externalProgress,
+        initialToolBatchRevision,
+        completionTracker,
+        recoverObservation,
+      );
+      const evidence = waitForBackendAcceptance
+        ? await Promise.race<ChatGptSubmissionEvidence>([
+          domAcceptance,
+          waitForBackendAcceptance(acceptanceSignal).then(() => "backend_response" as const),
+        ])
+        : await domAcceptance;
+      submissionLifecycle?.onSubmitted?.();
+      return evidence;
+    } finally {
+      acceptanceAbort.abort();
+    }
   }
 
   private async waitForMultipartAcknowledgement(
@@ -4772,6 +4804,7 @@ export class ChatGptBrowserWorker {
                   return recovered;
                 }
                 : undefined,
+              signal => submissionRejection.waitForAcceptance(signal),
             ),
           );
           console.info(
@@ -4927,6 +4960,7 @@ export class ChatGptBrowserWorker {
               return recovered;
             }
             : undefined,
+          signal => submissionRejection.waitForAcceptance(signal),
         ),
       );
       console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalSubmissionEvidence}`);
