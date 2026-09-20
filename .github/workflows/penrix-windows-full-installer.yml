@@ -1,0 +1,66 @@
+name: Penrix Windows Full Installer
+
+on:
+  push:
+    branches:
+      - build/windows-desktop-provider-full-installer
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install launcher dependencies
+        working-directory: launcher
+        run: bun install --frozen-lockfile
+
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+
+      - name: Test Windows Desktop provider layer
+        shell: pwsh
+        run: node --test launcher/tests/windows-desktop-provider.test.cjs
+
+      - name: Run launcher tests
+        run: bun run launcher:test
+
+      - name: Build full Windows Codex Web GPT installer
+        run: bun run app:package
+
+      - name: Smoke packaged launcher
+        run: bun run app:smoke
+
+      - name: Stage Penrix test installer
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path .\launcher\artifacts -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "No Windows installer EXE was produced" }
+          $out = ".\launcher\artifacts\Codex-Web-GPT-5.0.8-Penrix-Desktop-Fix-Windows-x64.exe"
+          Copy-Item -LiteralPath $exe.FullName -Destination $out -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLowerInvariant()
+          "$hash  Codex-Web-GPT-5.0.8-Penrix-Desktop-Fix-Windows-x64.exe" | Set-Content -Encoding ascii .\launcher\artifacts\SHA256SUMS-PENRIX.txt
+          Write-Host "PENRIX_INSTALLER=$out"
+          Write-Host "SHA256=$hash"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Web-GPT-5.0.8-Penrix-Desktop-Fix-Windows-x64
+          path: |
+            launcher/artifacts/Codex-Web-GPT-5.0.8-Penrix-Desktop-Fix-Windows-x64.exe
+            launcher/artifacts/SHA256SUMS-PENRIX.txt
+          if-no-files-found: error
+          retention-days: 14
