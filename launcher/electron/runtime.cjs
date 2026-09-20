@@ -16,6 +16,7 @@ const {
 const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
+const { applyWindowsDesktopProvider, restoreWindowsDesktopProvider } = require("./windows-desktop-provider.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -476,6 +477,7 @@ class RuntimeHost {
       path.join(coreHome, "codex", "integration-journal.recovery.json"),
       path.join(this.codexHome, "config.toml"),
       path.join(this.codexHome, "models_cache.json"),
+      path.join(this.codexHome, ".penrix-codex-desktop-provider.json"),
       path.join(coreHome, "secrets", "tunnel-runtime.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-automatic.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-zero-risk.key"),
@@ -948,6 +950,9 @@ class RuntimeHost {
       } catch (error) {
         try {
           await this.restoreBridgeRouteWithinOperation(name);
+          if (this.platform === "win32") {
+            applyWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
+          }
         } catch (routeError) {
           throw new Error(
             `${error instanceof Error ? error.message : String(error)}; restoring the previous Codex route also failed:`
@@ -960,6 +965,9 @@ class RuntimeHost {
         );
       }
       try {
+        if (this.platform === "win32") {
+          restoreWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
+        }
         const result = await this.run(name, ["uninstall", "--yes", "--launcher-control"], {
           embedded: true,
           env: this.launcherControlEnvironment(),
@@ -1389,6 +1397,9 @@ class RuntimeHost {
         throw new Error(`Setup completed, but the launcher-owned runtime is ${runtime.status}: ${runtime.detail || "not ready"}`);
       }
       await options.afterRuntimeReady?.();
+      if (this.launcherProfile === "production" && this.platform === "win32") {
+        applyWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
+      }
       return result;
     } catch (error) {
       const primary = error instanceof Error ? error.message : String(error);
