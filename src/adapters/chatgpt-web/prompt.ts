@@ -535,8 +535,8 @@ export function compileChatGptWebPrompt(
     ? [
       "The outer Codex runtime has advertised local tools for this turn through the Responses tool relay catalog below.",
       "For fresh local evidence or a local effect required by the active task, request those tools instead of claiming that local computer access is unavailable.",
-      `When a local tool is needed, return exactly one ${CHATGPT_RESPONSES_TOOL_RELAY_OPEN}...${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE} envelope and no user-facing prose in that response.`,
-      `The envelope body must be JSON with this shape: {"calls":[{"name":"EXACT_WIRE_NAME","arguments":{}}]}. Use the exact wire_name from the catalog. For a freeform tool, use {"name":"EXACT_WIRE_NAME","input":"..."}.`,
+      `When a local tool is needed, return exactly one fenced code block labeled json. Inside that block, put ${CHATGPT_RESPONSES_TOOL_RELAY_OPEN} on the first line, the JSON body next, and ${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE} on the last line. Do not write prose outside the block.`,
+      `The body must be strictly valid JSON with this shape: {"calls":[{"name":"EXACT_WIRE_NAME","arguments":{}}]}. Escape every quote and backslash inside JSON string values. Use the exact wire_name from the catalog. For a freeform tool, use {"name":"EXACT_WIRE_NAME","input":"..."}.`,
       "You may request up to 8 independent calls in one envelope. Never invent a tool name, parameter, local result, file content, command result, or computer state.",
       "The outer Codex runtime executes the requested calls under its normal local permissions, then invokes you again with the real tool_result messages in task history.",
       "After tool results arrive, continue the same task from those results. Request another tool batch when needed, or return the normal user-facing answer when the work is complete.",
