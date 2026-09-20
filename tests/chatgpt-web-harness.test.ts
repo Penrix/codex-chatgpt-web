@@ -2318,7 +2318,7 @@ describe("ChatGPT outer-native harness v4", () => {
           ].join("\n");
         }
         expect(prepared.text).toContain("relay-local-cwd");
-        expect(prepared.text).not.toContain("relay-static-system-contract");
+        expect(prepared.text).toContain("relay-static-system-contract");
         expect(prepared.text).not.toContain("Inspect the project");
         return "Local cwd: relay-local-cwd";
       } finally {
