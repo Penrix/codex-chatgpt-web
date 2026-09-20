@@ -53,6 +53,14 @@ jobs:
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
       - run: bun run app:package
+      - name: Upload Windows installer artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-windows-tool-relay
+          path: launcher/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |
