@@ -41,7 +41,25 @@ interface RelayPayload {
   calls?: unknown;
 }
 
-function malformed(message: string): never {
+function relayDiagnostic(
+  event: "answer" | "tools" | "malformed",
+  details: Record<string, string | number | boolean | undefined> = {},
+): void {
+  const suffix = Object.entries(details)
+    .filter((entry): entry is [string, string | number | boolean] => entry[1] !== undefined)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  const line = `[chatgpt-web] responses_tool_relay event=${event}${suffix ? ` ${suffix}` : ""}`;
+  if (event === "malformed") console.warn(line);
+  else console.info(line);
+}
+
+function malformed(
+  message: string,
+  reason = "invalid",
+  details: Record<string, string | number | boolean | undefined> = {},
+): never {
+  relayDiagnostic("malformed", { reason, ...details });
   throw new ChatGptWebAdapterError(message, {
     status: 502,
     errorType: "server_error",
@@ -82,14 +100,22 @@ export function parseResponsesToolRelayAnswer(
   tools: readonly CodexTool[],
 ): ResponsesToolRelayResult {
   const normalized = unescapeRelayMarkdown(answer);
-  const trimmed = unwrapRelayCodeFence(normalized.trim());
+  const normalizedMarkdown = normalized !== answer;
+  const normalizedTrimmed = normalized.trim();
+  const trimmed = unwrapRelayCodeFence(normalizedTrimmed);
+  const fenced = trimmed !== normalizedTrimmed;
   const hasOpen = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
   const hasClose = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
   // A damaged relay marker must never become visible as an ordinary answer.
   if (!hasOpen && !hasClose) {
     if (/codex_native_tool_calls_json/.test(trimmed)) {
-      malformed("ChatGPT returned an incomplete Responses tool relay marker");
+      malformed("ChatGPT returned an incomplete Responses tool relay marker", "incomplete_marker", {
+        answerChars: answer.length,
+        normalizedMarkdown,
+        fenced,
+      });
     }
+    relayDiagnostic("answer", { answerChars: answer.length });
     return { type: "answer", answer };
   }
 
@@ -97,7 +123,11 @@ export function parseResponsesToolRelayAnswer(
     !trimmed.startsWith(CHATGPT_RESPONSES_TOOL_RELAY_OPEN)
     || !trimmed.endsWith(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE)
   ) {
-    malformed("ChatGPT mixed a Responses tool relay envelope with user-facing text");
+    malformed("ChatGPT mixed a Responses tool relay envelope with user-facing text", "mixed_envelope", {
+      answerChars: answer.length,
+      normalizedMarkdown,
+      fenced,
+    });
   }
 
   const payloadText = trimmed.slice(
@@ -109,17 +139,41 @@ export function parseResponsesToolRelayAnswer(
   try {
     payload = JSON.parse(payloadText) as RelayPayload;
   } catch {
-    malformed("ChatGPT returned invalid JSON in the Responses tool relay envelope");
+    malformed("ChatGPT returned invalid JSON in the Responses tool relay envelope", "invalid_json", {
+      payloadChars: payloadText.length,
+      normalizedMarkdown,
+      fenced,
+    });
   }
 
-  if (!Array.isArray(payload.calls) || payload.calls.length < 1 || payload.calls.length > 8) {
-    malformed("ChatGPT Responses tool relay must contain between 1 and 8 calls");
+  let calls: unknown[];
+  let normalizedSingleCall = false;
+  if (Array.isArray(payload.calls)) {
+    calls = payload.calls;
+  } else if (payload.calls && typeof payload.calls === "object") {
+    // Some ChatGPT Web renders collapse a one-item calls array into the object itself.
+    // Accept that narrow compatibility shape and normalize it back to the canonical batch form.
+    calls = [payload.calls];
+    normalizedSingleCall = true;
+  } else {
+    malformed("ChatGPT Responses tool relay must contain a calls array or one call object", "invalid_calls_shape", {
+      normalizedMarkdown,
+      fenced,
+    });
+  }
+
+  if (calls.length < 1 || calls.length > 8) {
+    malformed("ChatGPT Responses tool relay must contain between 1 and 8 calls", "invalid_call_count", {
+      callCount: calls.length,
+      normalizedMarkdown,
+      fenced,
+    });
   }
 
   const available = new Map(
     tools.map(tool => [namespacedToolName(tool.namespace, tool.name), tool] as const),
   );
-  const requests: BrokerToolRequest[] = payload.calls.map((raw, index) => {
+  const requests: BrokerToolRequest[] = calls.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       malformed(`ChatGPT Responses tool relay call ${index + 1} is not an object`);
     }
@@ -156,5 +210,12 @@ export function parseResponsesToolRelayAnswer(
     };
   });
 
+  relayDiagnostic("tools", {
+    callCount: requests.length,
+    wireNames: requests.map(request => request.wireName).join(","),
+    normalizedMarkdown,
+    normalizedSingleCall,
+    fenced,
+  });
   return { type: "tools", requests };
 }
