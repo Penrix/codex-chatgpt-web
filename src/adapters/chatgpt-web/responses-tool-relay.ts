@@ -10,8 +10,10 @@ export const CHATGPT_RESPONSES_TOOL_RELAY_CLOSE = "</codex_native_tool_calls_jso
 export function responsesToolRelayEnabled(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  configured = false,
 ): boolean {
-  return !parsed._compactionRequest
+  return configured
+    && !parsed._compactionRequest
     && !capabilities.localToolsEnabled
     && (parsed.context.tools?.length ?? 0) > 0;
 }
