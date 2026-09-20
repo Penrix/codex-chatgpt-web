@@ -38,7 +38,6 @@ export function chatGptConversationKey(
     threadId: identity.threadId,
     modelId: parsed.modelId,
     reasoning: parsed.options.reasoning,
-    systemPrompt: parsed.context.systemPrompt ?? [],
     compaction: compactionEpoch(raw?.input),
   })).digest("hex");
 }
@@ -53,10 +52,6 @@ export function retainedConversationResumeRequest(
     ...parsed,
     context: {
       ...parsed.context,
-      // The retained ChatGPT conversation already owns the unchanged system contract. The
-      // conversation key above rotates whenever it changes, so repeating it on every tool-result
-      // continuation only increases browser payload size and latency.
-      systemPrompt: undefined,
       messages: parsed.context.messages.slice(lastAssistant + 1),
     },
   };
