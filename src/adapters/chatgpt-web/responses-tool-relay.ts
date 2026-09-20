@@ -103,12 +103,17 @@ export function parseResponsesToolRelayAnswer(
   const normalizedMarkdown = normalized !== answer;
   const normalizedTrimmed = normalized.trim();
   const trimmed = unwrapRelayCodeFence(normalizedTrimmed);
-  const fenced = trimmed !== normalizedTrimmed;
-  const hasOpen = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
-  const hasClose = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
+  const fenced = trimmed !== normalizedTrimmed || normalizedTrimmed.includes("```");
+  const openIndex = normalized.indexOf(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
+  const closeIndex = openIndex >= 0
+    ? normalized.indexOf(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE, openIndex + CHATGPT_RESPONSES_TOOL_RELAY_OPEN.length)
+    : -1;
+  const hasOpen = openIndex >= 0;
+  const hasClose = normalized.includes(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
+
   // A damaged relay marker must never become visible as an ordinary answer.
   if (!hasOpen && !hasClose) {
-    if (/codex_native_tool_calls_json/.test(trimmed)) {
+    if (/codex_native_tool_calls_json/.test(normalized)) {
       malformed("ChatGPT returned an incomplete Responses tool relay marker", "incomplete_marker", {
         answerChars: answer.length,
         normalizedMarkdown,
@@ -119,20 +124,36 @@ export function parseResponsesToolRelayAnswer(
     return { type: "answer", answer };
   }
 
-  if (
-    !trimmed.startsWith(CHATGPT_RESPONSES_TOOL_RELAY_OPEN)
-    || !trimmed.endsWith(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE)
-  ) {
-    malformed("ChatGPT mixed a Responses tool relay envelope with user-facing text", "mixed_envelope", {
+  if (!hasOpen || closeIndex < 0) {
+    malformed("ChatGPT returned an incomplete Responses tool relay marker", "incomplete_marker", {
       answerChars: answer.length,
       normalizedMarkdown,
       fenced,
     });
   }
 
-  const payloadText = trimmed.slice(
-    CHATGPT_RESPONSES_TOOL_RELAY_OPEN.length,
-    -CHATGPT_RESPONSES_TOOL_RELAY_CLOSE.length,
+  const afterClose = closeIndex + CHATGPT_RESPONSES_TOOL_RELAY_CLOSE.length;
+  if (
+    normalized.indexOf(CHATGPT_RESPONSES_TOOL_RELAY_OPEN, openIndex + CHATGPT_RESPONSES_TOOL_RELAY_OPEN.length) >= 0
+    || normalized.indexOf(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE, afterClose) >= 0
+  ) {
+    malformed("ChatGPT returned more than one Responses tool relay envelope", "multiple_envelopes", {
+      answerChars: answer.length,
+      normalizedMarkdown,
+      fenced,
+    });
+  }
+
+  const prefix = normalized.slice(0, openIndex);
+  const suffix = normalized.slice(afterClose);
+  const surrounding = `${prefix}${suffix}`
+    .replace(/```(?:json|text)?/g, "")
+    .trim();
+  const mixedTextChars = surrounding.length;
+
+  const payloadText = normalized.slice(
+    openIndex + CHATGPT_RESPONSES_TOOL_RELAY_OPEN.length,
+    closeIndex,
   ).trim();
 
   let payload: RelayPayload;
@@ -216,6 +237,7 @@ export function parseResponsesToolRelayAnswer(
     normalizedMarkdown,
     normalizedSingleCall,
     fenced,
+    mixedTextChars,
   });
   return { type: "tools", requests };
 }
