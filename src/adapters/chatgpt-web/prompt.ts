@@ -536,7 +536,9 @@ export function compileChatGptWebPrompt(
     ]
     : responsesToolRelay
     ? [
-      "The outer Codex runtime has advertised local tools for this turn through the Responses tool relay catalog below.",
+      includeResponsesToolRelayCatalog
+        ? "The outer Codex runtime has advertised local tools for this turn through the Responses tool relay catalog below."
+        : "The outer Codex runtime has advertised local tools for this turn through the unchanged Responses tool relay catalog already present earlier in this retained conversation.",
       "For fresh local evidence or a local effect required by the active task, request those tools instead of claiming that local computer access is unavailable.",
       `When a local tool is needed, return exactly one fenced code block labeled json. Inside that block, put ${CHATGPT_RESPONSES_TOOL_RELAY_OPEN} on the first line, the JSON body next, and ${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE} on the last line. Do not write prose outside the block.`,
       `The body must be strictly valid JSON with this shape: {"calls":[{"name":"EXACT_WIRE_NAME","arguments":{}}]}. Escape every quote and backslash inside JSON string values. Use the exact wire_name from the catalog. For a freeform tool, use {"name":"EXACT_WIRE_NAME","input":"..."}.`,
