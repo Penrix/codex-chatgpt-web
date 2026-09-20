@@ -106,6 +106,25 @@ test("relay answer parser converts JSON calls into broker requests", () => {
   });
 });
 
+test("single-call relay objects are normalized to one tool request", () => {
+  const answer = [
+    CHATGPT_RESPONSES_TOOL_RELAY_OPEN,
+    JSON.stringify({
+      calls: { name: "exec_command", arguments: { cmd: "Get-Location" } },
+    }),
+    CHATGPT_RESPONSES_TOOL_RELAY_CLOSE,
+  ].join("\n");
+
+  const parsed = parseResponsesToolRelayAnswer(answer, [shellTool]);
+  expect(parsed.type).toBe("tools");
+  if (parsed.type !== "tools") throw new Error("expected tool relay");
+  expect(parsed.requests).toHaveLength(1);
+  expect(parsed.requests[0]).toMatchObject({
+    wireName: "exec_command",
+    arguments: { cmd: "Get-Location" },
+  });
+});
+
 test("Markdown-escaped relay envelopes and fenced JSON remain tool calls", () => {
   const cmd = 'Get-ChildItem | Where-Object { $_.Name -like "*test*" }';
   const envelope = [
