@@ -106,6 +106,42 @@ test("relay answer parser converts JSON calls into broker requests", () => {
   });
 });
 
+test("Markdown-escaped relay envelopes and fenced JSON remain tool calls", () => {
+  const cmd = 'Get-ChildItem | Where-Object { $_.Name -like "*test*" }';
+  const envelope = [
+    CHATGPT_RESPONSES_TOOL_RELAY_OPEN,
+    JSON.stringify({ calls: [{ name: "exec_command", arguments: { cmd } }] }),
+    CHATGPT_RESPONSES_TOOL_RELAY_CLOSE,
+  ].join("\n");
+
+  const escaped = envelope.replace(/([_*<>\[\]])/g, "\\$1");
+  for (const answer of [
+    escaped,
+    [String.fromCharCode(96).repeat(3) + "json", envelope, String.fromCharCode(96).repeat(3)].join("\n"),
+  ]) {
+    const parsed = parseResponsesToolRelayAnswer(answer, [shellTool]);
+    expect(parsed.type).toBe("tools");
+    if (parsed.type !== "tools") throw new Error("expected tool relay");
+    expect(parsed.requests[0]).toMatchObject({
+      wireName: "exec_command",
+      arguments: { cmd },
+    });
+  }
+});
+
+test("malformed Markdown relay text cannot leak as an ordinary answer", () => {
+  const escapedOpen = CHATGPT_RESPONSES_TOOL_RELAY_OPEN.replaceAll("_", "\\_");
+  const escapedClose = CHATGPT_RESPONSES_TOOL_RELAY_CLOSE.replaceAll("_", "\\_");
+  expect(() => parseResponsesToolRelayAnswer(
+    escapedOpen + '{"calls":[{"name":"exec_command","arguments":{"cmd":"broken "quote""}}]}' + escapedClose,
+    [shellTool],
+  )).toThrow("invalid JSON");
+  expect(() => parseResponsesToolRelayAnswer(
+    "codex_native_tool_calls_json",
+    [shellTool],
+  )).toThrow("incomplete");
+});
+
 test("ordinary final answers pass through unchanged", () => {
   expect(parseResponsesToolRelayAnswer("finished", [shellTool])).toEqual({
     type: "answer",
