@@ -1159,9 +1159,17 @@ export function createChatGptWebAdapter(
             previousRelaySession?.runtime.mode === "read-only"
             && previousRelaySession.settledOutcome()?.type === "final"
             && previousRelaySession.outstanding().length > 0
-            && currentToolResults(parsed, previousRelaySession).length > 0
           ) {
-            await chatGptTurnSessions.retireAndWait(executionKey, incoming.abortSignal);
+            const outstanding = previousRelaySession.outstanding();
+            const results = currentToolResults(parsed, previousRelaySession);
+            if (results.length > 0 && results.length !== outstanding.length) {
+              throw new Error(
+                `Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT Responses relay batch`,
+              );
+            }
+            if (results.length === outstanding.length) {
+              await chatGptTurnSessions.retireAndWait(executionKey, incoming.abortSignal);
+            }
           }
         }
         const session = await chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
