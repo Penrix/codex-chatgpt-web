@@ -1397,8 +1397,9 @@ class RuntimeHost {
         throw new Error(`Setup completed, but the launcher-owned runtime is ${runtime.status}: ${runtime.detail || "not ready"}`);
       }
       await options.afterRuntimeReady?.();
-      if (this.launcherProfile === "production" && this.platform === "win32") {
-        applyWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
+      const desktopConfigPath = path.join(this.codexHome, "config.toml");
+      if (this.launcherProfile === "production" && this.platform === "win32" && fs.existsSync(desktopConfigPath)) {
+        applyWindowsDesktopProvider(desktopConfigPath, this.platform);
       }
       return result;
     } catch (error) {
