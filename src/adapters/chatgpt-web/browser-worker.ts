@@ -830,7 +830,7 @@ export class ChatGptSubmissionRejectionObserver {
     const status = response.status();
     // The exact owned conversation POST reached ChatGPT successfully. This is authoritative
     // submission evidence even if React has not mounted the new user/assistant turn yet.
-    if (status >= 200 && status < 400) {
+    if (status >= 200 && status < 300) {
       this.resolveAccepted?.();
       return;
     }
