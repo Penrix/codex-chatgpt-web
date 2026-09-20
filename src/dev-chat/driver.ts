@@ -1,6 +1,11 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ProviderAdapter } from "../adapters/base";
+import {
+  WebCodexContinuityBridge,
+  type WebCodexContinuityBinding,
+  type WebCodexRecoverySnapshot,
+} from "../continuity/webcodex";
 import { closeChatGptBrowserWorkers } from "../adapters/chatgpt-web/browser-worker";
 import { createChatGptWebAdapter } from "../adapters/chatgpt-web";
 import { estimateChatGptWebInputTokens } from "../adapters/chatgpt-web/usage";
@@ -414,6 +419,7 @@ export class DevChatDriver {
     readonly adapterFactory: AdapterFactory,
     readonly cwd = process.cwd(),
     readonly features: DevChatFeatures = DEFAULT_DEV_CHAT_FEATURES,
+    readonly continuity?: WebCodexContinuityBridge,
   ) {}
 
   open(name: string, requestedModel?: DevChatModel): { state: DevChatState; created: boolean } {
@@ -485,6 +491,7 @@ export class DevChatDriver {
   ): Promise<DevChatTurnResult> {
     const prompt = message.trim();
     if (!prompt) throw new Error("DEV chat message must not be empty");
+    await this.continuity?.bindTask(state.threadId, prompt);
     const turnId = id("dev_turn");
     let compactions = 0;
     let pendingCompactions = 0;
@@ -564,6 +571,40 @@ export class DevChatDriver {
       }
     }
     throw new Error("DEV chat exceeded 64 simulated tool rounds without a final answer");
+  }
+
+  continuityBinding(state: DevChatState): WebCodexContinuityBinding | undefined {
+    return this.continuity?.getBinding(state.threadId);
+  }
+
+  async recoverFrom(
+    state: DevChatState,
+    previousExternalTaskId: string,
+  ): Promise<WebCodexRecoverySnapshot> {
+    if (!this.continuity) {
+      throw new Error("WebCodex continuity is not configured for this DEV chat");
+    }
+    this.continuity.adoptTask(state.threadId, previousExternalTaskId);
+    const snapshot = await this.continuity.recoverTask(state.threadId);
+    const recoveryTurnId = id("dev_recovery_turn");
+    const payload = {
+      goal_id: snapshot.binding.goalId,
+      workflow_session_id: snapshot.binding.workflowSessionId,
+      goal: snapshot.goal,
+      handoff: snapshot.handoff,
+    };
+    state.input.push({
+      type: "message",
+      id: id("msg_dev_webcodex_recovery"),
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: `<codex_internal_context source="webcodex_continuity">\n${JSON.stringify(payload)}\n</codex_internal_context>`,
+      }],
+      internal_chat_message_metadata_passthrough: { turn_id: recoveryTurnId },
+    });
+    this.store.save(state);
+    return snapshot;
   }
 
   async close(): Promise<void> {
@@ -648,6 +689,9 @@ export class DevChatDriver {
     const body = await response.json() as { output?: unknown };
     if (!Array.isArray(body.output) || body.output.length === 0) {
       throw new Error("DEV compaction returned no replacement history");
+    }
+    if (this.continuity) {
+      await this.continuity.checkpointTaskFromCompaction(state.threadId, body.output);
     }
     emit({ type: "compaction_done", reason, inputItems: body.output.length });
     return body.output;
