@@ -56,8 +56,8 @@ jobs:
           '@
           Set-Content -LiteralPath $config -Value $original -Encoding utf8
 
-          & .\installer\Penrix-Codex-Desktop-Fix.exe /S
-          if ($LASTEXITCODE -ne 0) { throw "silent installer failed: $LASTEXITCODE" }
+          $install = Start-Process -FilePath .\installer\Penrix-Codex-Desktop-Fix.exe -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "silent installer failed: $($install.ExitCode)" }
 
           $patched = Get-Content -LiteralPath $config -Raw
           foreach ($needle in @(
@@ -75,8 +75,8 @@ jobs:
 
           $uninstaller = Join-Path $env:LOCALAPPDATA "Penrix\CodexDesktopProviderFix\Uninstall.exe"
           if (-not (Test-Path -LiteralPath $uninstaller)) { throw "uninstaller missing: $uninstaller" }
-          & $uninstaller /S
-          if ($LASTEXITCODE -ne 0) { throw "silent uninstall failed: $LASTEXITCODE" }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "silent uninstall failed: $($uninstall.ExitCode)" }
 
           $restored = Get-Content -LiteralPath $config -Raw
           if ($restored.Contains('model_provider = "codex_web_gpt"')) { throw "rollback left managed model_provider behind" }
