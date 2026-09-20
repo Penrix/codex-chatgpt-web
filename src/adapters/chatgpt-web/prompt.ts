@@ -442,7 +442,8 @@ export function compileChatGptWebPrompt(
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
-  const responsesToolRelay = options?.responsesToolRelay === true;
+  const responsesToolRelay = options?.responsesToolRelay
+    ?? (!manualControl && responsesToolRelayEnabled(parsed, capabilities));
   const attachSkills = options?.experimentalSkillAttachments === true;
   if (attachSkills && (manualControl || isChatGptWebZeroRiskBackendModel(parsed.modelId))) {
     throw new Error("Skills as files is unavailable in Zero Risk mode");
