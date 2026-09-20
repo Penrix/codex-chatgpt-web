@@ -735,36 +735,43 @@ test("browser send accepts an owned successful backend response before React mou
     isEnabled: async () => true,
     press: async () => { presses += 1; },
   };
-  worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
-  });
-  worker.waitForSubmissionAcceptedWithRecovery = async (_page, _baseline, signal) => (
-    await new Promise<never>((_resolve, reject) => {
-      const abort = () => reject(new DOMException("cancelled losing DOM acceptance", "AbortError"));
-      if (signal?.aborted) abort();
-      else signal?.addEventListener("abort", abort, { once: true });
-    })
-  );
+  const originalActiveComposer = worker.activeComposer;
+  const originalWaitForSubmissionAcceptedWithRecovery = worker.waitForSubmissionAcceptedWithRecovery;
+  try {
+    worker.activeComposer = async () => ({
+      locator: () => ({ getByTestId: () => sendButton }),
+    });
+    worker.waitForSubmissionAcceptedWithRecovery = async (_page, _baseline, signal) => (
+      await new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(new DOMException("cancelled losing DOM acceptance", "AbortError"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      })
+    );
 
-  const lifecycle: string[] = [];
-  const evidence = await worker.sendAttachedPrompt(
-    page,
-    {},
-    undefined,
-    undefined,
-    undefined,
-    {
-      onSendActivated: async () => { lifecycle.push("activated"); },
-      onSubmitted: () => { lifecycle.push("submitted"); },
-    },
-    undefined,
-    undefined,
-    async () => {},
-  );
+    const lifecycle: string[] = [];
+    const evidence = await worker.sendAttachedPrompt(
+      page,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      {
+        onSendActivated: async () => { lifecycle.push("activated"); },
+        onSubmitted: () => { lifecycle.push("submitted"); },
+      },
+      undefined,
+      undefined,
+      async () => {},
+    );
 
-  expect(evidence).toBe("backend_response");
-  expect(presses).toBe(1);
-  expect(lifecycle).toEqual(["activated", "submitted"]);
+    expect(evidence).toBe("backend_response");
+    expect(presses).toBe(1);
+    expect(lifecycle).toEqual(["activated", "submitted"]);
+  } finally {
+    worker.activeComposer = originalActiveComposer;
+    worker.waitForSubmissionAcceptedWithRecovery = originalWaitForSubmissionAcceptedWithRecovery;
+  }
 });
 
 test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
