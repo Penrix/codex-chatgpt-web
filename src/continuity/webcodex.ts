@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { atomicWriteFile } from "../config";
+import { SUMMARY_PREFIX } from "../responses/compaction";
 
 const STATE_VERSION = 1;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
@@ -264,7 +265,6 @@ export class WebCodexContinuityBridge {
     const work = await this.callTool("work_on_project", {
       project: this.config.project,
       instruction: objective,
-      include_extension_catalog: false,
     }, "effect");
     const workflowSessionId = sessionIdFromWorkOutput(work);
     if (!workflowSessionId) {
@@ -350,6 +350,17 @@ export class WebCodexContinuityBridge {
     state.bindings[stateKey(taskId)] = updated;
     this.saveState(state);
     return updated;
+  }
+
+  async checkpointTaskFromCompaction(externalTaskId: string, replacementHistory: unknown[]): Promise<WebCodexContinuityBinding> {
+    const summary = compactionSummaryFromReplacementHistory(replacementHistory);
+    if (!summary) {
+      throw new WebCodexContinuityError(
+        "Compaction replacement history does not contain a readable checkpoint summary",
+        "state_error",
+      );
+    }
+    return this.checkpointTask(externalTaskId, summary);
   }
 
   async recoverTask(externalTaskId: string): Promise<WebCodexRecoverySnapshot> {
