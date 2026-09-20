@@ -173,7 +173,7 @@ test("relay accepts harmless prose around one valid tool envelope", () => {
     `${CHATGPT_RESPONSES_TOOL_RELAY_OPEN}\n${JSON.stringify(payload)}\n${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE}`;
 
   const parsed = parseResponsesToolRelayAnswer(
-    `I will check that locally.\n\n\\`\\`\\`json\n${envelope({ calls: [{ name: "exec_command", arguments: { cmd: "dir" } }] })}\n\\`\\`\\`\nI will continue after the result.`,
+    ["I will check that locally.", "", String.fromCharCode(96).repeat(3) + "json", envelope({ calls: [{ name: "exec_command", arguments: { cmd: "dir" } }] }), String.fromCharCode(96).repeat(3), "I will continue after the result."].join("\\n"),
     [shellTool],
   );
   expect(parsed.type).toBe("tools");
