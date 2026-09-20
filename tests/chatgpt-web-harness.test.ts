@@ -2277,6 +2277,120 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("browser-only Responses relay emits a native tool call and resumes from its tool result", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://responses-tool-relay-${Date.now()}`,
+      chatgptWeb: {
+        localToolsEnabled: false,
+        responsesToolRelayEnabled: true,
+        solAvailable: true,
+        extraHighAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      const prepared = await turn.prepare();
+      try {
+        expect(prepared.text).toContain("<codex_native_tools_json>");
+        expect(prepared.text).toContain('"wire_name":"exec_command"');
+        if (browserStarts === 1) {
+          expect(prepared.text).not.toContain("relay-local-cwd");
+          return [
+            "<codex_native_tool_calls_json>",
+            JSON.stringify({
+              calls: [{
+                name: "exec_command",
+                arguments: { cmd: "Get-Location" },
+              }],
+            }),
+            "</codex_native_tool_calls_json>",
+          ].join("\n");
+        }
+        expect(prepared.text).toContain("relay-local-cwd");
+        return "Local cwd: relay-local-cwd";
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const initial = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    try {
+      await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
+      const call = firstEvents.find(
+        (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> =>
+          event.type === "tool_call_start",
+      );
+      expect(call?.name).toBe("exec_command");
+      expect(firstEvents.filter(event => event.type === "text_delta")).toHaveLength(0);
+      expect(firstEvents.at(-1)).toMatchObject({
+        type: "done",
+        stopReason: "tool_use",
+        endTurn: false,
+      });
+
+      const continuation = structuredClone(initial);
+      const toolCall = {
+        role: "assistant" as const,
+        content: [{
+          type: "toolCall" as const,
+          id: call!.id,
+          name: "exec_command",
+          arguments: { cmd: "Get-Location" },
+        }],
+        timestamp: 3,
+      };
+      const result = {
+        role: "toolResult" as const,
+        toolCallId: call!.id,
+        toolName: "exec_command",
+        content: JSON.stringify({ output: "relay-local-cwd", exit_code: 0 }),
+        isError: false,
+        timestamp: 4,
+      };
+      continuation.context.messages.push(toolCall, result);
+      ((continuation._rawBody as { input: unknown[] }).input).push(
+        {
+          type: "function_call",
+          call_id: call!.id,
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "Get-Location" }),
+        },
+        {
+          type: "function_call_output",
+          call_id: call!.id,
+          output: result.content,
+        },
+      );
+
+      const finalEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(
+        continuation,
+        { headers: new Headers() },
+        event => finalEvents.push(event),
+      );
+      expect(browserStarts).toBe(2);
+      expect(finalEvents.find(event => event.type === "tool_call_start")).toBeUndefined();
+      expect(finalEvents.filter(
+        (event): event is Extract<AdapterEvent, { type: "text_delta" }> =>
+          event.type === "text_delta",
+      ).map(event => event.text).join("")).toBe("Local cwd: relay-local-cwd");
+      expect(finalEvents.at(-1)).toMatchObject({
+        type: "done",
+        stopReason: "stop",
+        endTurn: true,
+      });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    }
+  });
+
   test("replays an ordinary post-tool final after one retained structured compaction handoff", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-adapter-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
