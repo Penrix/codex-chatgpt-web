@@ -140,7 +140,6 @@ function applyWindowsDesktopProvider(configPath, platform = process.platform) {
   if (previousProviderBlock) removeRange(lines, previousProviderBlock.start, previousProviderBlock.end);
   setTopLevelAssignment(lines, "model_provider", 'model_provider = "codex_web_gpt"');
   if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
-  lines.push("# Penrix Windows Codex Desktop compatibility provider.");
   lines.push(...MANAGED_PROVIDER_LINES);
   writeState(configPath, state);
   try {
