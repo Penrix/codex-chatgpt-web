@@ -58,6 +58,21 @@ function objectArguments(value: unknown, name: string): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
+/**
+ * The browser returns Markdown, which can escape punctuation in plain text.
+ * Remove only Markdown escapes used by the relay envelope and JSON structure.
+ * Preserve even backslash runs, including ordinary JSON escaping.
+ */
+function unescapeRelayMarkdown(text: string): string {
+  return text.replace(/(\\+)([_*<>\[\]])/g, (match, slashes: string, punctuation: string) =>
+    slashes.length % 2 === 1 ? slashes.slice(1) + punctuation : match);
+}
+
+function unwrapRelayCodeFence(text: string): string {
+  const match = /^\x60{3}(?:json|text)?\r?\n([\s\S]*?)\r?\n\x60{3}$/.exec(text);
+  return match ? match[1]!.trim() : text;
+}
+
 export type ResponsesToolRelayResult =
   | { type: "answer"; answer: string }
   | { type: "tools"; requests: BrokerToolRequest[] };
@@ -66,10 +81,17 @@ export function parseResponsesToolRelayAnswer(
   answer: string,
   tools: readonly CodexTool[],
 ): ResponsesToolRelayResult {
-  const trimmed = answer.trim();
+  const normalized = unescapeRelayMarkdown(answer);
+  const trimmed = unwrapRelayCodeFence(normalized.trim());
   const hasOpen = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
   const hasClose = trimmed.includes(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
-  if (!hasOpen && !hasClose) return { type: "answer", answer };
+  // A damaged relay marker must never become visible as an ordinary answer.
+  if (!hasOpen && !hasClose) {
+    if (/codex_native_tool_calls_json/.test(trimmed)) {
+      malformed("ChatGPT returned an incomplete Responses tool relay marker");
+    }
+    return { type: "answer", answer };
+  }
 
   if (
     !trimmed.startsWith(CHATGPT_RESPONSES_TOOL_RELAY_OPEN)
