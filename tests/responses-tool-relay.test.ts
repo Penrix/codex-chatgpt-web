@@ -168,14 +168,25 @@ test("ordinary final answers pass through unchanged", () => {
   });
 });
 
-test("relay rejects mixed prose, unknown tools, malformed arguments, and empty batches", () => {
+test("relay accepts harmless prose around one valid tool envelope", () => {
   const envelope = (payload: unknown) =>
     `${CHATGPT_RESPONSES_TOOL_RELAY_OPEN}\n${JSON.stringify(payload)}\n${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE}`;
 
-  expect(() => parseResponsesToolRelayAnswer(
-    `I will run it.\n${envelope({ calls: [{ name: "exec_command", arguments: { cmd: "dir" } }] })}`,
+  const parsed = parseResponsesToolRelayAnswer(
+    `I will check that locally.\n\n\\`\\`\\`json\n${envelope({ calls: [{ name: "exec_command", arguments: { cmd: "dir" } }] })}\n\\`\\`\\`\nI will continue after the result.`,
     [shellTool],
-  )).toThrow("mixed");
+  );
+  expect(parsed.type).toBe("tools");
+  if (parsed.type !== "tools") throw new Error("expected tool relay");
+  expect(parsed.requests[0]).toMatchObject({
+    wireName: "exec_command",
+    arguments: { cmd: "dir" },
+  });
+});
+
+test("relay rejects unknown tools, malformed arguments, duplicate envelopes, and empty batches", () => {
+  const envelope = (payload: unknown) =>
+    `${CHATGPT_RESPONSES_TOOL_RELAY_OPEN}\n${JSON.stringify(payload)}\n${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE}`;
 
   expect(() => parseResponsesToolRelayAnswer(
     envelope({ calls: [{ name: "missing_tool", arguments: {} }] }),
@@ -186,6 +197,13 @@ test("relay rejects mixed prose, unknown tools, malformed arguments, and empty b
     envelope({ calls: [{ name: "exec_command", arguments: "dir" }] }),
     [shellTool],
   )).toThrow("JSON object");
+
+  expect(() => parseResponsesToolRelayAnswer(
+    envelope({ calls: [{ name: "exec_command", arguments: { cmd: "dir" } }] })
+      + "\n"
+      + envelope({ calls: [{ name: "exec_command", arguments: { cmd: "pwd" } }] }),
+    [shellTool],
+  )).toThrow("more than one");
 
   expect(() => parseResponsesToolRelayAnswer(envelope({ calls: [] }), [shellTool]))
     .toThrow("between 1 and 8");
