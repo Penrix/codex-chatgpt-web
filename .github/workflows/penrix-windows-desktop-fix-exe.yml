@@ -1,0 +1,102 @@
+name: Penrix Windows Desktop Fix EXE
+
+on:
+  push:
+    branches:
+      - fix/windows-desktop-provider-trial
+    paths:
+      - 'installer/penrix-codex-desktop-fix.nsi'
+      - 'scripts/install-penrix-windows-desktop-provider.ps1'
+      - '.github/workflows/penrix-windows-desktop-fix-exe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis -y --no-progress
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          Copy-Item .\scripts\install-penrix-windows-desktop-provider.ps1 .\installer\install-penrix-windows-desktop-provider.ps1
+          $candidates = @(
+            "$env:ProgramFiles\NSIS\makensis.exe",
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $makensis) { throw "makensis.exe not found after NSIS install" }
+          Push-Location .\installer
+          try { & $makensis .\penrix-codex-desktop-fix.nsi } finally { Pop-Location }
+          if ($LASTEXITCODE -ne 0) { throw "NSIS build failed: $LASTEXITCODE" }
+
+      - name: Smoke install and rollback
+        shell: powershell
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "penrix-codex-desktop-fix-smoke"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $env:CODEX_HOME = $root
+          $config = Join-Path $root "config.toml"
+          $original = @'
+          model = "gpt-5.6-sol"
+          approval_policy = "never"
+          openai_base_url = "http://127.0.0.1:17841/v1"
+          experimental_realtime_webrtc_call_base_url = "https://chatgpt.com/backend-api/codex"
+
+          [features]
+          multi_agent = true
+          '@
+          Set-Content -LiteralPath $config -Value $original -Encoding utf8
+
+          $install = Start-Process -FilePath .\installer\Penrix-Codex-Desktop-Fix.exe -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "silent installer failed: $($install.ExitCode)" }
+
+          $patched = Get-Content -LiteralPath $config -Raw
+          foreach ($needle in @(
+            'openai_base_url = "http://127.0.0.1:17841/v1"',
+            'model = "chatgpt-web/high"',
+            'model_provider = "codex_web_gpt"',
+            '[model_providers.codex_web_gpt]',
+            'base_url = "http://localhost:17841/v1"',
+            'wire_api = "responses"',
+            'requires_openai_auth = true',
+            'supports_websockets = false'
+          )) {
+            if (-not $patched.Contains($needle)) { throw "installer missing expected config: $needle" }
+          }
+
+          $uninstaller = Join-Path $env:LOCALAPPDATA "Penrix\CodexDesktopProviderFix\Uninstall.exe"
+          if (-not (Test-Path -LiteralPath $uninstaller)) { throw "uninstaller missing: $uninstaller" }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "silent uninstall failed: $($uninstall.ExitCode)" }
+
+          $restored = Get-Content -LiteralPath $config -Raw
+          if ($restored.Contains('model_provider = "codex_web_gpt"')) { throw "rollback left managed model_provider behind" }
+          if (-not $restored.Contains('model = "gpt-5.6-sol"')) { throw "rollback did not restore original model" }
+          if (-not $restored.Contains('openai_base_url = "http://127.0.0.1:17841/v1"')) { throw "rollback damaged launcher route" }
+          Write-Host "PENRIX_WINDOWS_DESKTOP_FIX_EXE_SMOKE_OK"
+
+      - name: Record SHA-256
+        shell: powershell
+        run: |
+          $exe = ".\installer\Penrix-Codex-Desktop-Fix.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          "$hash  Penrix-Codex-Desktop-Fix.exe" | Set-Content -Encoding ascii .\installer\SHA256SUMS.txt
+          Write-Host "SHA256: $hash"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Penrix-Codex-Desktop-Fix-Windows-x64
+          path: |
+            installer/Penrix-Codex-Desktop-Fix.exe
+            installer/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,29 @@
+name: penrix-windows-desktop-provider
+
+on:
+  push:
+    branches:
+      - fix/windows-desktop-explicit-provider
+    paths:
+      - 'scripts/install-penrix-windows-desktop-provider.ps1'
+      - 'scripts/test-penrix-windows-desktop-provider.ps1'
+      - '.github/workflows/penrix-windows-desktop-provider.yml'
+  pull_request:
+    paths:
+      - 'scripts/install-penrix-windows-desktop-provider.ps1'
+      - 'scripts/test-penrix-windows-desktop-provider.ps1'
+      - '.github/workflows/penrix-windows-desktop-provider.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-config-patch:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise reversible explicit-provider patch
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-penrix-windows-desktop-provider.ps1
