@@ -1,7 +1,12 @@
 import { createInterface } from "node:readline/promises";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { DEV_CHATGPT_CONNECTOR_NAME, loadConfig } from "../config";
+import {
+  loadWebCodexContinuityConfig,
+  WebCodexContinuityBridge,
+} from "../continuity/webcodex";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -52,6 +57,8 @@ Interactive commands:
   /send-fill TOKENS    Send deterministic inert text through the live browser now
   /compact             Run the real browser compaction path now
   /model MODEL         Select zero-risk, luna, think, light, medium, high, extra-high, or pro
+  /continuity          Show this thread's explicit WebCodex Goal/Session binding
+  /recover-from ID     Explicitly adopt durable work from a previous thread id
   /reset yes           Clear this named DEV chat and create a new thread identity
   /help                Show this command list
   /exit                Exit
@@ -242,13 +249,33 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
           if (!model || rest.length > 0) throw new Error("Usage: /model MODEL");
           driver.setModel(state, model);
           stdout.write(`model ${state.model} · context ${statusLine(driver.status(state))}\n`);
+        } else if (command === "continuity") {
+          if (argument) throw new Error("Usage: /continuity");
+          const binding = driver.continuityBinding(state);
+          stdout.write(`thread ${state.threadId}\n`);
+          if (!binding) {
+            stdout.write("WebCodex continuity is not bound for this thread. It is created on the first sent message when continuity is configured.\n");
+          } else {
+            stdout.write(`goal ${binding.goalId} · session ${binding.workflowSessionId} · revision ${binding.goalRevision}\n`);
+          }
+        } else if (command === "recover-from") {
+          if (!argument || rest.length > 0) throw new Error("Usage: /recover-from PREVIOUS_THREAD_ID");
+          const snapshot = await driver.recoverFrom(state, argument);
+          stdout.write(
+            `recovered ${state.threadId} from ${argument} · goal ${snapshot.binding.goalId} · session ${snapshot.binding.workflowSessionId} · revision ${snapshot.binding.goalRevision}\n`,
+          );
         } else if (command === "reset") {
           if (argument !== "yes" || rest.length > 0) {
             stdout.write("Use /reset yes to clear this DEV chat.\n");
             continue;
           }
+          const previousThreadId = state.threadId;
+          const previousBinding = driver.continuityBinding(state);
           driver.reset(state);
-          stdout.write(`reset ${state.name}; new empty DEV thread created\n`);
+          stdout.write(`reset ${state.name}; new empty DEV thread created (${state.threadId})\n`);
+          if (previousBinding) {
+            stdout.write(`durable work remains in WebCodex; use /recover-from ${previousThreadId} to adopt it explicitly\n`);
+          }
         } else {
           stdout.write(`Unknown DEV command /${command}. Use /help.\n`);
         }
@@ -409,7 +436,18 @@ export async function runDevCommand(args: string[]): Promise<void> {
         ...(transport ? { broker: transport.broker } : {}),
       },
     );
-    driver = new DevChatDriver(runtimeConfig, store, runtime.adapterFactory, process.cwd(), features);
+    const continuityConfig = loadWebCodexContinuityConfig(
+      join(runtimeStateRoot, "webcodex-continuity.json"),
+    );
+    const continuity = continuityConfig ? new WebCodexContinuityBridge(continuityConfig) : undefined;
+    driver = new DevChatDriver(
+      runtimeConfig,
+      store,
+      runtime.adapterFactory,
+      process.cwd(),
+      features,
+      continuity,
+    );
     const opened = driver.open(name, requestedModel);
     if (requestedModel && opened.state.model !== requestedModel) {
       driver.setModel(opened.state, requestedModel);
