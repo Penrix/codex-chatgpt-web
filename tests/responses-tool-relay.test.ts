@@ -50,10 +50,14 @@ const browserOnly = {
 
 test("browser-only turns automatically expose Codex-advertised tools through the Responses relay", () => {
   const parsed = request();
-  expect(responsesToolRelayEnabled(parsed, browserOnly)).toBe(true);
-  expect(chatGptReadOnlyContextWarning(parsed, browserOnly)).toBeUndefined();
+  expect(responsesToolRelayEnabled(parsed, browserOnly)).toBe(false);
+  expect(responsesToolRelayEnabled(parsed, browserOnly, true)).toBe(true);
+  expect(chatGptReadOnlyContextWarning(parsed, browserOnly)).toStartWith("> **Local tools unavailable**");
+  expect(chatGptReadOnlyContextWarning(parsed, browserOnly, true)).toBeUndefined();
 
-  const compiled = compileChatGptWebPrompt(parsed, browserOnly);
+  const compiled = compileChatGptWebPrompt(parsed, browserOnly, undefined, {
+    responsesToolRelay: true,
+  });
   expect(compiled.text).toContain("<codex_native_tools_json>");
   expect(compiled.text).toContain('"wire_name":"exec_command"');
   expect(compiled.text).toContain(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
@@ -135,9 +139,9 @@ test("relay rejects mixed prose, unknown tools, malformed arguments, and empty b
 test("relay stays disabled for compaction and official Full harness turns", () => {
   const compact = request();
   compact._compactionRequest = true;
-  expect(responsesToolRelayEnabled(compact, browserOnly)).toBe(false);
+  expect(responsesToolRelayEnabled(compact, browserOnly, true)).toBe(false);
   expect(responsesToolRelayEnabled(request(), {
     ...browserOnly,
     localToolsEnabled: true,
-  })).toBe(false);
+  }, true)).toBe(false);
 });
