@@ -50,6 +50,8 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
   /** Relay Codex-advertised tools through Responses when no ChatGPT connector/tunnel is attached. */
   responsesToolRelay?: boolean;
+  /** A retained relay conversation already owns the unchanged catalog; omit the repeated schema payload. */
+  responsesToolRelayCatalog?: boolean;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
@@ -444,6 +446,7 @@ export function compileChatGptWebPrompt(
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
   const responsesToolRelay = options?.responsesToolRelay === true;
+  const includeResponsesToolRelayCatalog = options?.responsesToolRelayCatalog !== false;
   const attachSkills = options?.experimentalSkillAttachments === true;
   if (attachSkills && (manualControl || isChatGptWebZeroRiskBackendModel(parsed.modelId))) {
     throw new Error("Skills as files is unavailable in Zero Risk mode");
@@ -588,7 +591,7 @@ export function compileChatGptWebPrompt(
       "</codex_zero_risk_request_json>",
     ]
     : [];
-  const responsesToolRelayContract = responsesToolRelay
+  const responsesToolRelayContract = responsesToolRelay && includeResponsesToolRelayCatalog
     ? [
       "<codex_native_tools_json>",
       responsesToolRelayCatalog(parsed.context.tools ?? []),
