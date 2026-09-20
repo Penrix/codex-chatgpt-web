@@ -285,9 +285,14 @@ function emitTextDeltas(deltas: string[], emit: (event: AdapterEvent) => void): 
 function emitReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  responsesToolRelayConfigured: boolean,
   emit: (event: AdapterEvent) => void,
 ): void {
-  const warning = chatGptReadOnlyContextWarning(parsed, capabilities);
+  const warning = chatGptReadOnlyContextWarning(
+    parsed,
+    capabilities,
+    responsesToolRelayConfigured,
+  );
   if (!warning) return;
   emit({ type: "assistant_boundary" });
   emit({ type: "text_delta", text: warning, phase: "commentary" });
@@ -352,6 +357,7 @@ export function createChatGptWebAdapter(
   const zeroRiskManualControl = dependencies.zeroRiskManualControl ?? launcherZeroRiskManualControl;
   const structuredBroker = broker instanceof TurnBroker ? broker : undefined;
   const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
+  const responsesToolRelayConfigured = provider.chatgptWeb?.responsesToolRelayEnabled === true;
   const experimentalSkillAttachments = provider.chatgptWeb?.experimentalSkillAttachments;
   if (experimentalSkillAttachments !== undefined && typeof experimentalSkillAttachments !== "boolean") {
     throw new Error("ChatGPT skill attachments preference must be a boolean");
@@ -447,7 +453,11 @@ export function createChatGptWebAdapter(
       return {
         captureLunaCheckpoint,
         experimentalSkillAttachments,
-        responsesToolRelay: responsesToolRelayEnabled(input, turnCapabilities),
+        responsesToolRelay: responsesToolRelayEnabled(
+          input,
+          turnCapabilities,
+          responsesToolRelayConfigured,
+        ),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
@@ -683,7 +693,11 @@ export function createChatGptWebAdapter(
       };
     }
     if (!mode.localTools) {
-      const responsesToolRelay = responsesToolRelayEnabled(checkpointInput.parsed, turnCapabilities);
+      const responsesToolRelay = responsesToolRelayEnabled(
+        checkpointInput.parsed,
+        turnCapabilities,
+        responsesToolRelayConfigured,
+      );
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
         modelId: parsed.modelId,
@@ -837,7 +851,8 @@ export function createChatGptWebAdapter(
         const mode = manualRequest
           ? { localTools: true }
           : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
-        const responsesToolRelay = !manualRequest && responsesToolRelayEnabled(parsed, turnCapabilities);
+        const responsesToolRelay = !manualRequest
+          && responsesToolRelayEnabled(parsed, turnCapabilities, responsesToolRelayConfigured);
         const structuredOutputValidator = parsed._compactionRequest
           ? undefined
           : createChatGptStructuredOutputValidator(parsed.options.outputFormat);
@@ -1199,7 +1214,7 @@ export function createChatGptWebAdapter(
                 }
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
                 if (replay.length === 0 && !parsed._compactionRequest) {
-                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
+                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, responsesToolRelayConfigured, buffer));
                 }
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
                 const relay = parseResponsesToolRelayAnswer(settled.answer, parsed.context.tools ?? []);
@@ -1254,7 +1269,7 @@ export function createChatGptWebAdapter(
               } else {
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
                 if (replay.length === 0 && !parsed._compactionRequest) {
-                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
+                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, responsesToolRelayConfigured, buffer));
                 }
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
                 if (!bufferStructuredOutput) {
@@ -1326,7 +1341,7 @@ export function createChatGptWebAdapter(
                 if (!bufferStructuredOutput) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
               };
               if (replay.length === 0 && !parsed._compactionRequest) {
-                emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
+                emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, responsesToolRelayConfigured, buffer));
               }
               emitNewTrace(session.runtime.trace.drain());
               emitNewText(session.runtime.text.drain());
