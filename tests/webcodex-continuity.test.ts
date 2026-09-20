@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -58,8 +58,21 @@ describe("WebCodex continuity config", () => {
   test("rejects partial configuration instead of guessing", () => {
     expect(() => loadWebCodexContinuityConfig(tempStatePath(), {
       CODEX_CHATGPT_WEB_WEBCODEX_URL: "http://127.0.0.1:9876",
-      CODEX_CHATGPT_WEB_WEBCODEX_TOKEN: "token",
+      CODEX_CHATGPT_WEB_WEBCODEX_TOKEN_FILE: "/tmp/missing-token-file",
     })).toThrow(WebCodexContinuityError);
+  });
+
+  test("reads the WebCodex token from a file without persisting the file path", () => {
+    const statePath = tempStatePath();
+    const tokenPath = join(statePath, "..", "webcodex.token");
+    writeFileSync(tokenPath, "file-secret-token\n");
+    const loaded = loadWebCodexContinuityConfig(statePath, {
+      CODEX_CHATGPT_WEB_WEBCODEX_URL: "http://127.0.0.1:9876",
+      CODEX_CHATGPT_WEB_WEBCODEX_TOKEN_FILE: tokenPath,
+      CODEX_CHATGPT_WEB_WEBCODEX_PROJECT: "agent:test:project",
+    });
+    expect(loaded?.token).toBe("file-secret-token");
+    expect(loaded?.project).toBe("agent:test:project");
   });
 });
 
