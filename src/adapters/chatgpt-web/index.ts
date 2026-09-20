@@ -27,6 +27,7 @@ import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebC
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import {
   parseResponsesToolRelayAnswer,
+  responsesToolRelayCatalog,
   responsesToolRelayEnabled,
 } from "./responses-tool-relay";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
@@ -430,34 +431,66 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
-    const conversationKey = !parsed._compactionRequest
+    const retainedRelay = responsesToolRelayEnabled(
+      checkpointInput.parsed,
+      turnCapabilities,
+      responsesToolRelayConfigured,
+    );
+    const baseConversationKey = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-      && mode.localTools
+      && (mode.localTools || retainedRelay)
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
+    // A relay continuation may safely omit the repeated system prompt and tool schemas only while
+    // both remain byte-for-byte unchanged. Fold those immutable inputs into the retained key so a
+    // changed Codex contract/catalog starts a fresh Temporary Chat instead of inheriting stale data.
+    const conversationKey = baseConversationKey && retainedRelay
+      ? createHash("sha256")
+        .update(baseConversationKey)
+        .update("\0responses-tool-relay\0")
+        .update(JSON.stringify({
+          system: checkpointInput.parsed.context.systemPrompt ?? [],
+          catalog: responsesToolRelayCatalog(checkpointInput.parsed.context.tools ?? []),
+        }))
+        .digest("hex")
+      : baseConversationKey;
     const resumeInput = conversationKey
       ? retainedConversationResumeRequest(checkpointInput.parsed)
       : undefined;
+    const relayResumeInput = retainedRelay && resumeInput
+      ? {
+        ...resumeInput,
+        context: {
+          ...resumeInput.context,
+          systemPrompt: [],
+        },
+      }
+      : resumeInput;
     const retainConversation = conversationKey !== undefined;
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
       ? async () => {
         await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
       }
       : undefined;
-    const compileOptionsFor = (input: CodexParsedRequest) => {
+    const compileOptionsFor = (
+      input: CodexParsedRequest,
+      options: { retainedRelayResume?: boolean } = {},
+    ) => {
       if (manualRequest) return {};
       const experimentalMultipartParts = experimentalBiggerContext
         ? resolveBiggerContextMultipartParts(input, turnCapabilities, experimentalSkillAttachments)
         : undefined;
+      const relay = responsesToolRelayEnabled(
+        input,
+        turnCapabilities,
+        responsesToolRelayConfigured,
+      );
       return {
         captureLunaCheckpoint,
         experimentalSkillAttachments,
-        responsesToolRelay: responsesToolRelayEnabled(
-          input,
-          turnCapabilities,
-          responsesToolRelayConfigured,
-        ),
+        responsesToolRelay: relay,
+        ...(relay && options.retainedRelayResume ? { responsesToolRelayCatalog: false } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
@@ -712,6 +745,18 @@ export function createChatGptWebAdapter(
           ),
           release: () => {},
         }),
+        ...(responsesToolRelay && relayResumeInput ? {
+          prepareResume: async () => ({
+            ...compileChatGptWebPrompt(
+              relayResumeInput,
+              turnCapabilities,
+              undefined,
+              compileOptionsFor(relayResumeInput, { retainedRelayResume: true }),
+            ),
+            release: () => {},
+          }),
+        } : {}),
+        ...(responsesToolRelay && retainConversation ? { retainConversation: true, conversationKey } : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
@@ -733,6 +778,8 @@ export function createChatGptWebAdapter(
         trace,
         text,
         usageInput: checkpointInput.parsed,
+        ...(responsesToolRelay && conversationKey ? { conversationKey } : {}),
+        ...(responsesToolRelay && releaseRetainedConversation ? { releaseRetainedConversation } : {}),
         submission,
         cancel: browserTurn.cancel,
       };
