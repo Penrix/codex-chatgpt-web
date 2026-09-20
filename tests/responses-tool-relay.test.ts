@@ -73,6 +73,7 @@ test("retained relay continuation can omit the unchanged tool catalog without di
   });
   expect(compiled.text).not.toContain("<codex_native_tools_json>");
   expect(compiled.text).not.toContain('"wire_name":"exec_command"');
+  expect(compiled.text).toContain("unchanged Responses tool relay catalog already present earlier");
   expect(compiled.text).toContain(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
   expect(compiled.text).toContain(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
 });
