@@ -950,9 +950,6 @@ class RuntimeHost {
       } catch (error) {
         try {
           await this.restoreBridgeRouteWithinOperation(name);
-          if (this.platform === "win32") {
-            applyWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
-          }
         } catch (routeError) {
           throw new Error(
             `${error instanceof Error ? error.message : String(error)}; restoring the previous Codex route also failed:`
@@ -983,6 +980,9 @@ class RuntimeHost {
       } catch (error) {
         try {
           await this.restoreBridgeRouteWithinOperation(name);
+          if (this.platform === "win32") {
+            applyWindowsDesktopProvider(path.join(this.codexHome, "config.toml"), this.platform);
+          }
         } catch (routeError) {
           throw new Error(
             `${error instanceof Error ? error.message : String(error)}; restoring the previous Codex route also failed:`
