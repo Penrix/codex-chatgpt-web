@@ -430,9 +430,15 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
+    const responsesToolRelay = !manualRequest
+      && responsesToolRelayEnabled(
+        checkpointInput.parsed,
+        turnCapabilities,
+        responsesToolRelayConfigured,
+      );
     const conversationKey = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-      && mode.localTools
+      && (mode.localTools || responsesToolRelay)
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
@@ -693,11 +699,6 @@ export function createChatGptWebAdapter(
       };
     }
     if (!mode.localTools) {
-      const responsesToolRelay = responsesToolRelayEnabled(
-        checkpointInput.parsed,
-        turnCapabilities,
-        responsesToolRelayConfigured,
-      );
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
         modelId: parsed.modelId,
@@ -712,6 +713,20 @@ export function createChatGptWebAdapter(
           ),
           release: () => {},
         }),
+        ...(responsesToolRelay && resumeInput ? {
+          prepareResume: async () => ({
+            ...compileChatGptWebPrompt(
+              resumeInput,
+              turnCapabilities,
+              undefined,
+              compileOptionsFor(resumeInput),
+            ),
+            release: () => {},
+          }),
+        } : {}),
+        ...(responsesToolRelay && retainConversation
+          ? { retainConversation: true, conversationKey }
+          : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
@@ -733,6 +748,8 @@ export function createChatGptWebAdapter(
         trace,
         text,
         usageInput: checkpointInput.parsed,
+        ...(responsesToolRelay && conversationKey ? { conversationKey } : {}),
+        ...(responsesToolRelay && releaseRetainedConversation ? { releaseRetainedConversation } : {}),
         submission,
         cancel: browserTurn.cancel,
       };
