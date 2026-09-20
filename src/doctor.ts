@@ -216,7 +216,12 @@ export async function runDoctor(): Promise<DoctorReport> {
       detail: "Verify it once at https://chatgpt.com/#settings/Plugins while the tunnel is ready.",
     });
   } else {
-    checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });
+    checks.push({
+      id: "tools",
+      status: "ok",
+      message: "Browser-only mode uses the Responses Tool Relay for Codex-advertised local tools; no MCP tunnel is required",
+      detail: "If a local tool turn fails, export Activity → Safe log and inspect responses_tool_relay events.",
+    });
   }
 
   return {
