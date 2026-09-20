@@ -2282,6 +2282,8 @@ describe("ChatGPT outer-native harness v4", () => {
       adapter: "chatgpt-web",
       baseUrl: `browser://responses-tool-relay-${Date.now()}`,
       chatgptWeb: {
+        browserHost: "launcher",
+        browserHostDescriptorPath: join(tempRoot, "responses-relay-launcher.json"),
         localToolsEnabled: false,
         responsesToolRelayEnabled: true,
         solAvailable: true,
@@ -2294,11 +2296,15 @@ describe("ChatGPT outer-native harness v4", () => {
     let browserStarts = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       browserStarts += 1;
-      const prepared = await turn.prepare();
+      expect(turn.retainConversation).toBe(true);
+      expect(turn.conversationKey).toBeDefined();
+      if (browserStarts === 2) expect(turn.prepareResume).toBeDefined();
+      const prepared = browserStarts === 1 ? await turn.prepare() : await turn.prepareResume!();
       try {
         expect(prepared.text).toContain("<codex_native_tools_json>");
         expect(prepared.text).toContain('"wire_name":"exec_command"');
         if (browserStarts === 1) {
+          expect(prepared.text).toContain("relay-static-system-contract");
           expect(prepared.text).not.toContain("relay-local-cwd");
           return [
             "<codex_native_tool_calls_json>",
@@ -2312,6 +2318,8 @@ describe("ChatGPT outer-native harness v4", () => {
           ].join("\n");
         }
         expect(prepared.text).toContain("relay-local-cwd");
+        expect(prepared.text).toContain("relay-static-system-contract");
+        expect(prepared.text).not.toContain("Inspect the project");
         return "Local cwd: relay-local-cwd";
       } finally {
         prepared.release();
@@ -2320,6 +2328,7 @@ describe("ChatGPT outer-native harness v4", () => {
 
     const adapter = createChatGptWebAdapter(provider);
     const initial = rawWireRequest(environmentXml);
+    initial.context.systemPrompt = ["relay-static-system-contract"];
     const firstEvents: AdapterEvent[] = [];
     try {
       await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
