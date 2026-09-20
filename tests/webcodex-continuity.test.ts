@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  compactionSummaryFromReplacementHistory,
   loadWebCodexContinuityConfig,
   WebCodexContinuityBridge,
   WebCodexContinuityError,
@@ -63,6 +64,20 @@ describe("WebCodex continuity config", () => {
 });
 
 describe("WebCodex continuity binding", () => {
+  test("extracts the real compaction summary rather than checkpointing transport prose", () => {
+    const summary = compactionSummaryFromReplacementHistory([
+      {
+        type: "message",
+        role: "user",
+        content: [{
+          type: "input_text",
+          text: "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:\nCurrent decision: keep the Provider thin.\nNext: run cross-thread recovery.",
+        }],
+      },
+    ]);
+    expect(summary).toBe("Current decision: keep the Provider thin.\nNext: run cross-thread recovery.");
+  });
+
   test("binds one external task to an exact durable Goal and Workflow Session", async () => {
     const calls: Array<{ tool: string; params: Record<string, unknown>; authorization: string | null }> = [];
     const fetchImpl: typeof fetch = async (_input, init) => {
