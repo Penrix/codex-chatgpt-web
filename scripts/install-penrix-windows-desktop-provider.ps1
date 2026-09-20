@@ -53,13 +53,13 @@ function Remove-ProviderBlock([System.Collections.Generic.List[string]]$Lines) {
 
 $ConfigPath = Resolve-CodexConfigPath $ConfigPath
 
+$backupPath = "$ConfigPath.penrix-desktop-provider-original"
+
 if ($Restore) {
-  $dir = Split-Path $ConfigPath -Parent
-  $leaf = Split-Path $ConfigPath -Leaf
-  $backup = Get-ChildItem -LiteralPath $dir -Filter ($leaf + ".penrix-desktop-provider-backup-*") | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-  if (-not $backup) { throw "No Penrix backup found for $ConfigPath" }
-  Copy-Item -LiteralPath $backup.FullName -Destination $ConfigPath -Force
-  Write-Host "Restored: $($backup.FullName)"
+  if (-not (Test-Path -LiteralPath $backupPath)) { throw "No Penrix original backup found for $ConfigPath" }
+  Copy-Item -LiteralPath $backupPath -Destination $ConfigPath -Force
+  Remove-Item -LiteralPath $backupPath -Force
+  Write-Host "Restored original Codex config."
   Write-Host "Fully quit Codex Desktop including background codex.exe, then reopen it."
   exit 0
 }
@@ -80,9 +80,9 @@ if ($lines[$baseIndex].Trim() -ne $expectedBase) {
   throw "Unexpected launcher route: $($lines[$baseIndex]). Expected $expectedBase"
 }
 
-$timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
-$backupPath = "$ConfigPath.penrix-desktop-provider-backup-$timestamp"
-Copy-Item -LiteralPath $ConfigPath -Destination $backupPath
+if (-not (Test-Path -LiteralPath $backupPath)) {
+  Copy-Item -LiteralPath $ConfigPath -Destination $backupPath
+}
 
 Set-TopLevel $lines "model_provider" 'model_provider = "codex_web_gpt"'
 if ($SetHighDefault) { Set-TopLevel $lines "model" 'model = "chatgpt-web/high"' }
