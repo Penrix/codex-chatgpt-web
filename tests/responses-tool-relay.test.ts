@@ -65,6 +65,18 @@ test("browser-only turns automatically expose Codex-advertised tools through the
   expect(compiled.text).not.toContain("cannot access the local Codex computer in this turn");
 });
 
+test("retained relay continuation can omit the unchanged tool catalog without disabling relay instructions", () => {
+  const parsed = request();
+  const compiled = compileChatGptWebPrompt(parsed, browserOnly, undefined, {
+    responsesToolRelay: true,
+    responsesToolRelayCatalog: false,
+  });
+  expect(compiled.text).not.toContain("<codex_native_tools_json>");
+  expect(compiled.text).not.toContain('"wire_name":"exec_command"');
+  expect(compiled.text).toContain(CHATGPT_RESPONSES_TOOL_RELAY_OPEN);
+  expect(compiled.text).toContain(CHATGPT_RESPONSES_TOOL_RELAY_CLOSE);
+});
+
 test("relay catalog preserves namespaced wire names and tool kinds", () => {
   const catalog = JSON.parse(responsesToolRelayCatalog([
     { ...shellTool, name: "read", namespace: "mcp__files" },
