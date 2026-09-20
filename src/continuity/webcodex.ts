@@ -220,6 +220,31 @@ export function loadWebCodexContinuityConfig(
   };
 }
 
+export function compactionSummaryFromReplacementHistory(history: unknown[]): string | undefined {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as { role?: unknown; content?: unknown };
+    if (record.role !== "user") continue;
+    const blocks = Array.isArray(record.content)
+      ? record.content
+      : typeof record.content === "string"
+        ? [{ type: "input_text", text: record.content }]
+        : [];
+    const text = blocks
+      .filter((block): block is { type?: unknown; text: string } => Boolean(
+        block && typeof block === "object" && !Array.isArray(block)
+        && typeof (block as { text?: unknown }).text === "string",
+      ))
+      .map(block => block.text)
+      .join("");
+    if (!text.startsWith(`${SUMMARY_PREFIX}\n`)) continue;
+    const summary = text.slice(SUMMARY_PREFIX.length).replace(/^\n+/, "").trim();
+    return summary || undefined;
+  }
+  return undefined;
+}
+
 export class WebCodexContinuityBridge {
   private readonly baseUrl: string;
   private readonly statePath: string;
