@@ -417,10 +417,11 @@ function partitionMultipartContext(
 export function chatGptReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  responsesToolRelayConfigured = false,
 ): string | undefined {
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) return undefined;
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  if (mode.localTools || responsesToolRelayEnabled(parsed, capabilities)) return undefined;
+  if (mode.localTools || responsesToolRelayEnabled(parsed, capabilities, responsesToolRelayConfigured)) return undefined;
   const label = mode.effort === "max" ? "ChatGPT Pro" : `ChatGPT Web ${mode.displayLabel}`;
   const hasLocalEvidence = parsed.context.messages.some(message =>
     message.role === "toolResult"
@@ -442,8 +443,7 @@ export function compileChatGptWebPrompt(
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
-  const responsesToolRelay = options?.responsesToolRelay
-    ?? (!manualControl && responsesToolRelayEnabled(parsed, capabilities));
+  const responsesToolRelay = options?.responsesToolRelay === true;
   const attachSkills = options?.experimentalSkillAttachments === true;
   if (attachSkills && (manualControl || isChatGptWebZeroRiskBackendModel(parsed.modelId))) {
     throw new Error("Skills as files is unavailable in Zero Risk mode");
