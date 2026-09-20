@@ -15,6 +15,12 @@ import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
 } from "./rolling-checkpoint";
+import {
+  CHATGPT_RESPONSES_TOOL_RELAY_CLOSE,
+  CHATGPT_RESPONSES_TOOL_RELAY_OPEN,
+  responsesToolRelayCatalog,
+  responsesToolRelayEnabled,
+} from "./responses-tool-relay";
 
 export interface ChatGptWebPromptImage {
   ref: string;
@@ -42,6 +48,8 @@ export interface CompileChatGptWebPromptOptions {
    * reads or mutates ChatGPT's DOM. Completion is accepted only through the bound Zero Risk MCP tools.
    */
   manualControl?: true;
+  /** Relay Codex-advertised tools through Responses when no ChatGPT connector/tunnel is attached. */
+  responsesToolRelay?: boolean;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
@@ -409,10 +417,11 @@ function partitionMultipartContext(
 export function chatGptReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  responsesToolRelayConfigured = false,
 ): string | undefined {
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) return undefined;
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  if (mode.localTools) return undefined;
+  if (mode.localTools || responsesToolRelayEnabled(parsed, capabilities, responsesToolRelayConfigured)) return undefined;
   const label = mode.effort === "max" ? "ChatGPT Pro" : `ChatGPT Web ${mode.displayLabel}`;
   const hasLocalEvidence = parsed.context.messages.some(message =>
     message.role === "toolResult"
@@ -434,6 +443,7 @@ export function compileChatGptWebPrompt(
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
   const manualControl = options?.manualControl === true;
+  const responsesToolRelay = options?.responsesToolRelay === true;
   const attachSkills = options?.experimentalSkillAttachments === true;
   if (attachSkills && (manualControl || isChatGptWebZeroRiskBackendModel(parsed.modelId))) {
     throw new Error("Skills as files is unavailable in Zero Risk mode");
@@ -471,6 +481,12 @@ export function compileChatGptWebPrompt(
   }
   if (!mode.localTools && turnToken !== undefined) {
     throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
+  }
+  if (responsesToolRelay && (manualControl || mode.localTools || parsed._compactionRequest)) {
+    throw new Error("Responses tool relay is supported only for normal browser-only ChatGPT turns");
+  }
+  if (responsesToolRelay && (parsed.context.tools?.length ?? 0) === 0) {
+    throw new Error("Responses tool relay requires Codex-advertised tools");
   }
   const system = parsed.context.systemPrompt ?? [];
   const sharedContract = [
@@ -514,6 +530,17 @@ export function compileChatGptWebPrompt(
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
       "Continue using the available tools until the requested work is complete and verified.",
       "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
+    ]
+    : responsesToolRelay
+    ? [
+      "The outer Codex runtime has advertised local tools for this turn through the Responses tool relay catalog below.",
+      "For fresh local evidence or a local effect required by the active task, request those tools instead of claiming that local computer access is unavailable.",
+      `When a local tool is needed, return exactly one ${CHATGPT_RESPONSES_TOOL_RELAY_OPEN}...${CHATGPT_RESPONSES_TOOL_RELAY_CLOSE} envelope and no user-facing prose in that response.`,
+      `The envelope body must be JSON with this shape: {"calls":[{"name":"EXACT_WIRE_NAME","arguments":{}}]}. Use the exact wire_name from the catalog. For a freeform tool, use {"name":"EXACT_WIRE_NAME","input":"..."}.`,
+      "You may request up to 8 independent calls in one envelope. Never invent a tool name, parameter, local result, file content, command result, or computer state.",
+      "The outer Codex runtime executes the requested calls under its normal local permissions, then invokes you again with the real tool_result messages in task history.",
+      "After tool results arrive, continue the same task from those results. Request another tool batch when needed, or return the normal user-facing answer when the work is complete.",
+      "Do not mention the relay protocol or catalog in the user-facing answer.",
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
@@ -559,6 +586,13 @@ export function compileChatGptWebPrompt(
       "<codex_zero_risk_request_json>",
       JSON.stringify({ request_id: turnToken }),
       "</codex_zero_risk_request_json>",
+    ]
+    : [];
+  const responsesToolRelayContract = responsesToolRelay
+    ? [
+      "<codex_native_tools_json>",
+      responsesToolRelayCatalog(parsed.context.tools ?? []),
+      "</codex_native_tools_json>",
     ]
     : [];
   const transportResume = parsed._compactionRequest
@@ -632,6 +666,7 @@ export function compileChatGptWebPrompt(
           ...transportContract,
           ...outputControlContract,
           ...manualControlContract,
+          ...responsesToolRelayContract,
           ...checkpointContract,
           answerContract,
           ...transportResume,
@@ -669,6 +704,7 @@ export function compileChatGptWebPrompt(
       ...transportContract,
       ...outputControlContract,
       ...manualControlContract,
+      ...responsesToolRelayContract,
       ...checkpointContract,
       answerContract,
       "<codex_context_json>",

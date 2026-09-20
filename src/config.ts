@@ -586,6 +586,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
+      responsesToolRelayEnabled: !manual && config.mode === "browser-only",
       solAvailable: manual ? false : config.solAvailable,
       extraHighAvailable: !manual && config.extraHighAvailable === true,
       proAvailable: manual ? false : config.proAvailable,
