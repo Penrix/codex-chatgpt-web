@@ -61,6 +61,8 @@ Before opening the browser turn:
 
 Normal later messages reuse the existing binding and do not create another Goal/Session.
 
+Between Goal creation and Workflow Session association, the bridge persists an **incomplete binding attempt** before each non-replay-safe boundary. If the process crashes or a post-dispatch response is lost, a later message sees that attempt and fails closed instead of calling `work_on_project` again. `/continuity` exposes the exact Goal, phase, and Session id when one is already known so the operator can reconcile durable truth explicitly.
+
 ### Compaction
 
 After the real DEV browser compaction returns canonical replacement history:
@@ -115,7 +117,7 @@ Do not promote this into the production Responses path until one live DEV run de
 5. `/recover-from <old id>` on the empty new thread returns the **same** Goal and Session.
 6. The next model turn can continue from Goal + handoff evidence without the old DEV history.
 7. The local correlation file contains neither bearer token nor original user prompt.
-8. A simulated post-dispatch connection loss fails closed as `outcome_unknown` and is not automatically replayed.
+8. A simulated post-dispatch connection loss fails closed as `outcome_unknown`, persists the incomplete attempt, and a later user message still does not dispatch a second `work_on_project`.
 9. A recovery attempt on a non-empty thread or against another configured project is rejected.
 
 Passing this proves the first claim only: **thread death no longer has to equal task-state death**. It does not yet prove production routing, automatic resume, or full long-horizon quality.
