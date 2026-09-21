@@ -584,6 +584,9 @@ export class DevChatDriver {
     if (!this.continuity) {
       throw new Error("WebCodex continuity is not configured for this DEV chat");
     }
+    if (state.input.length !== 0 || state.turns !== 0) {
+      throw new Error("WebCodex recovery requires a fresh empty DEV thread; reset first");
+    }
     this.continuity.adoptTask(state.threadId, previousExternalTaskId);
     const snapshot = await this.continuity.recoverTask(state.threadId);
     const recoveryTurnId = id("dev_recovery_turn");
