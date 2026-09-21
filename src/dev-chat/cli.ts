@@ -252,11 +252,18 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
         } else if (command === "continuity") {
           if (argument) throw new Error("Usage: /continuity");
           const binding = driver.continuityBinding(state);
+          const pending = driver.continuityAttempt(state);
           stdout.write(`thread ${state.threadId}\n`);
-          if (!binding) {
-            stdout.write("WebCodex continuity is not bound for this thread. It is created on the first sent message when continuity is configured.\n");
-          } else {
+          if (binding) {
             stdout.write(`goal ${binding.goalId} · session ${binding.workflowSessionId} · revision ${binding.goalRevision}\n`);
+          } else if (pending) {
+            stdout.write(
+              `incomplete WebCodex binding · goal ${pending.goalId} · phase ${pending.phase}`
+              + `${pending.workflowSessionId ? ` · session ${pending.workflowSessionId}` : ""}\n`,
+            );
+            stdout.write("Reconcile this exact Goal/Session before retrying; the bridge will not create another Session automatically.\n");
+          } else {
+            stdout.write("WebCodex continuity is not bound for this thread. It is created on the first sent message when continuity is configured.\n");
           }
         } else if (command === "recover-from") {
           if (!argument || rest.length > 0) throw new Error("Usage: /recover-from PREVIOUS_THREAD_ID");
