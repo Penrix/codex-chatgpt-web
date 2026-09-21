@@ -171,6 +171,30 @@ describe("WebCodex continuity binding", () => {
     expect(persisted).not.toContain("objective");
   });
 
+  test("rejects adoption from a binding owned by another configured project", () => {
+    const cfg = config();
+    writeFileSync(cfg.statePath, JSON.stringify({
+      version: 1,
+      bindings: {
+        thread_other_project: {
+          version: 1,
+          externalTaskId: "thread_other_project",
+          project: "agent:other:project",
+          goalId: "wc_goal_7777777777777777",
+          workflowSessionId: "wc_sess_6666666666666666",
+          goalRevision: 1,
+          createdAt: "2026-09-21T00:00:00.000Z",
+          updatedAt: "2026-09-21T00:00:00.000Z"
+        }
+      }
+    }));
+    const bridge = new WebCodexContinuityBridge(cfg, async () => {
+      throw new Error("network should not be used");
+    });
+    expect(() => bridge.adoptTask("thread_new_project", "thread_other_project"))
+      .toThrow("another WebCodex project");
+  });
+
   test("adoption is explicit and preserves exact durable identities", async () => {
     const fetchImpl: typeof fetch = async (_input, init) => {
       const body = JSON.parse(String(init?.body)) as { tool: string };
