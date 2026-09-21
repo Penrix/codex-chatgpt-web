@@ -299,5 +299,19 @@ describe("WebCodex continuity binding", () => {
     expect((error as WebCodexContinuityError).kind).toBe("outcome_unknown");
     expect(workCalls).toBe(1);
     expect(bridge.getBinding("thread_uncertain")).toBeUndefined();
+    expect(bridge.getPendingAttempt("thread_uncertain")).toMatchObject({
+      goalId: "wc_goal_1111111111111111",
+      phase: "before_work_on_project",
+    });
+
+    let secondError: unknown;
+    try {
+      await bridge.bindTask("thread_uncertain", "A later user message must not start a second Session.");
+    } catch (caught) {
+      secondError = caught;
+    }
+    expect(secondError).toBeInstanceOf(WebCodexContinuityError);
+    expect((secondError as WebCodexContinuityError).kind).toBe("outcome_unknown");
+    expect(workCalls).toBe(1);
   });
 });
