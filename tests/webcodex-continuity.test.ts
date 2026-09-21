@@ -141,6 +141,35 @@ describe("WebCodex continuity binding", () => {
     expect(calls).toHaveLength(3);
   });
 
+  test("sanitizes legacy binding files so old prompt text is not re-persisted", async () => {
+    const cfg = config();
+    writeFileSync(cfg.statePath, JSON.stringify({
+      version: 1,
+      bindings: {
+        thread_legacy: {
+          version: 1,
+          externalTaskId: "thread_legacy",
+          project: "agent:test:project",
+          goalId: "wc_goal_9999999999999999",
+          workflowSessionId: "wc_sess_8888888888888888",
+          goalRevision: 2,
+          objective: "legacy prompt text that must be dropped",
+          createdAt: "2026-09-21T00:00:00.000Z",
+          updatedAt: "2026-09-21T00:00:00.000Z"
+        }
+      }
+    }));
+
+    const bridge = new WebCodexContinuityBridge(cfg, async () => {
+      throw new Error("network should not be used");
+    });
+    const adopted = bridge.adoptTask("thread_legacy_new", "thread_legacy");
+    expect(adopted.goalId).toBe("wc_goal_9999999999999999");
+    const persisted = readFileSync(cfg.statePath, "utf8");
+    expect(persisted).not.toContain("legacy prompt text that must be dropped");
+    expect(persisted).not.toContain("objective");
+  });
+
   test("adoption is explicit and preserves exact durable identities", async () => {
     const fetchImpl: typeof fetch = async (_input, init) => {
       const body = JSON.parse(String(init?.body)) as { tool: string };
