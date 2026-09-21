@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { ProviderAdapter } from "../adapters/base";
 import {
   WebCodexContinuityBridge,
+  type WebCodexContinuityAttempt,
   type WebCodexContinuityBinding,
   type WebCodexRecoverySnapshot,
 } from "../continuity/webcodex";
@@ -575,6 +576,10 @@ export class DevChatDriver {
 
   continuityBinding(state: DevChatState): WebCodexContinuityBinding | undefined {
     return this.continuity?.getBinding(state.threadId);
+  }
+
+  continuityAttempt(state: DevChatState): WebCodexContinuityAttempt | undefined {
+    return this.continuity?.getPendingAttempt(state.threadId);
   }
 
   async recoverFrom(
