@@ -222,20 +222,9 @@ export function loadWebCodexContinuityConfig(
       "invalid_config",
     );
   }
-  const tokenPath = resolve(tokenFile!);
-  let token: string;
-  try {
-    token = readFileSync(tokenPath, "utf8").trim();
-  } catch (error) {
-    throw new WebCodexContinuityError(
-      `Could not read WebCodex continuity token file ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`,
-      "invalid_config",
-    );
-  }
-  if (!token) throw new WebCodexContinuityError("WebCodex continuity token file is empty", "invalid_config");
   return {
     baseUrl: normalizedBaseUrl(baseUrl!),
-    token,
+    tokenFile: resolve(tokenFile!),
     project: project!,
     statePath: resolve(statePath),
   };
