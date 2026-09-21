@@ -9,6 +9,8 @@ const MAX_STATE_BYTES = 2 * 1024 * 1024;
 const MAX_EXTERNAL_TASK_ID = 128;
 const MAX_OBJECTIVE_BYTES = 8 * 1024;
 const MAX_CHECKPOINT_BYTES = 2 * 1024;
+const GOAL_ID = /^wc_goal_[A-Za-z0-9_-]{16}$/;
+const WORKFLOW_SESSION_ID = /^wc_sess_(?:[A-Za-z0-9_-]{16}|[0-9a-f]{32})$/;
 
 export interface WebCodexContinuityConfig {
   baseUrl: string;
@@ -143,8 +145,8 @@ function goalIdentity(output: unknown): { goalId: string; revision: number } {
   const summary = goal ? nestedObject(goal, "summary") : undefined;
   const goalId = summary ? stringAt(summary, "goal_id") : undefined;
   const revision = summary ? numberAt(summary, "revision") : undefined;
-  if (!goalId || !revision) {
-    throw new WebCodexContinuityError("WebCodex Goal response omitted goal_id or revision", "runtime_error");
+  if (!goalId || !GOAL_ID.test(goalId) || !revision) {
+    throw new WebCodexContinuityError("WebCodex Goal response omitted a valid goal_id or revision", "runtime_error");
   }
   return { goalId, revision };
 }
@@ -180,7 +182,9 @@ function parseState(raw: string, path: string): WebCodexContinuityState {
       binding.version !== 1
       || typeof binding.project !== "string"
       || typeof binding.goalId !== "string"
+      || !GOAL_ID.test(binding.goalId)
       || typeof binding.workflowSessionId !== "string"
+      || !WORKFLOW_SESSION_ID.test(binding.workflowSessionId)
       || typeof binding.goalRevision !== "number"
       || !Number.isSafeInteger(binding.goalRevision)
       || binding.goalRevision < 1
@@ -334,8 +338,8 @@ export class WebCodexContinuityBridge {
       instruction: objective,
     }, "effect");
     const workflowSessionId = sessionIdFromWorkOutput(work);
-    if (!workflowSessionId) {
-      throw new WebCodexContinuityError("work_on_project response omitted Workflow Session identity", "runtime_error");
+    if (!workflowSessionId || !WORKFLOW_SESSION_ID.test(workflowSessionId)) {
+      throw new WebCodexContinuityError("work_on_project response omitted a valid Workflow Session identity", "runtime_error");
     }
 
     await this.callTool("associate_goal_workflow_session", {
@@ -367,6 +371,9 @@ export class WebCodexContinuityBridge {
     const previous = state.bindings[stateKey(previousId)];
     if (!previous) {
       throw new WebCodexContinuityError(`No WebCodex continuity binding exists for ${previousId}`, "state_error");
+    }
+    if (previous.project !== this.config.project) {
+      throw new WebCodexContinuityError("Previous continuity binding belongs to another WebCodex project", "state_error");
     }
     const existing = state.bindings[stateKey(nextId)];
     if (existing) {
