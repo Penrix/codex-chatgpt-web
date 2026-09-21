@@ -23,9 +23,11 @@ afterEach(() => {
 });
 
 function config(statePath = tempStatePath()): WebCodexContinuityConfig {
+  const tokenFile = join(statePath, "..", "webcodex-token");
+  writeFileSync(tokenFile, "test-secret-token\n", { mode: 0o600 });
   return {
     baseUrl: "http://127.0.0.1:9876",
-    token: "test-secret-token",
+    tokenFile,
     project: "agent:test:project",
     statePath,
   };
@@ -132,6 +134,7 @@ describe("WebCodex continuity binding", () => {
     expect(persisted).toContain(binding.goalId);
     expect(persisted).toContain(binding.workflowSessionId);
     expect(persisted).not.toContain("test-secret-token");
+    expect(persisted).not.toContain("Fix the continuity boundary without rebuilding the runtime.");
 
     const second = await bridge.bindTask("thread_abc", "A different prompt must not silently retarget existing durable work.");
     expect(second).toEqual(binding);
