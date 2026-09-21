@@ -21,6 +21,8 @@ Nothing is copied from the normal launcher. The DEV command fails closed if its 
 browser descriptor, credentials, or connector are not ready. It never falls back to the production
 profile, another model, a fake browser, or a second connector.
 
+For the optional WebCodex durable-task continuity experiment, see [WebCodex continuity DEV slice](webcodex-continuity-dev.md). That slice is intentionally DEV-only and does not alter the production Responses route.
+
 ## Run
 
 One browser-only message:
@@ -66,6 +68,8 @@ Interactive commands:
 /send-fill 12000
 /compact
 /model high
+/continuity
+/recover-from PREVIOUS_THREAD_ID
 /reset yes
 /help
 /exit
