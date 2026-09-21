@@ -264,6 +264,12 @@ function parseState(raw: string, path: string): WebCodexContinuityState {
       createdAt: attempt.createdAt,
       updatedAt: attempt.updatedAt,
     };
+    if (bindings[key]) {
+      throw new WebCodexContinuityError(
+        `WebCodex continuity state contains both a completed binding and an incomplete attempt for ${key}`,
+        "state_error",
+      );
+    }
   }
   return { version: 1, bindings, attempts };
 }
@@ -465,6 +471,13 @@ export class WebCodexContinuityBridge {
     }
     if (previous.project !== this.config.project) {
       throw new WebCodexContinuityError("Previous continuity binding belongs to another WebCodex project", "state_error");
+    }
+    const pending = state.attempts[stateKey(nextId)];
+    if (pending) {
+      throw new WebCodexContinuityError(
+        `Task ${nextId} already has an incomplete WebCodex binding attempt at ${pending.phase}; reconcile it before adopting other durable work`,
+        "outcome_unknown",
+      );
     }
     const existing = state.bindings[stateKey(nextId)];
     if (existing) {
