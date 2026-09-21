@@ -292,7 +292,7 @@ export function loadWebCodexContinuityConfig(
 }
 
 function readWebCodexToken(path: string): string {
-  let stat;
+  let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(path);
   } catch (error) {
