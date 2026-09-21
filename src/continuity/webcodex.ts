@@ -190,7 +190,19 @@ function parseState(raw: string, path: string): WebCodexContinuityState {
     ) {
       throw new WebCodexContinuityError(`WebCodex continuity binding has invalid fields: ${key}`, "state_error");
     }
-    bindings[key] = binding as unknown as WebCodexContinuityBinding;
+    bindings[key] = {
+      version: 1,
+      externalTaskId,
+      project: binding.project,
+      goalId: binding.goalId,
+      workflowSessionId: binding.workflowSessionId,
+      goalRevision: binding.goalRevision,
+      createdAt: binding.createdAt,
+      updatedAt: binding.updatedAt,
+      ...(typeof binding.adoptedFromTaskId === "string"
+        ? { adoptedFromTaskId: binding.adoptedFromTaskId }
+        : {}),
+    };
   }
   return { version: 1, bindings };
 }
