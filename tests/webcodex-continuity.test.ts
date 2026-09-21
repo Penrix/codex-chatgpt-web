@@ -64,7 +64,7 @@ describe("WebCodex continuity config", () => {
     })).toThrow(WebCodexContinuityError);
   });
 
-  test("reads the WebCodex token from a file without persisting the file path", () => {
+  test("keeps only the WebCodex token-file path in config", () => {
     const statePath = tempStatePath();
     const tokenPath = join(statePath, "..", "webcodex.token");
     writeFileSync(tokenPath, "file-secret-token\n");
@@ -73,8 +73,9 @@ describe("WebCodex continuity config", () => {
       CODEX_CHATGPT_WEB_WEBCODEX_TOKEN_FILE: tokenPath,
       CODEX_CHATGPT_WEB_WEBCODEX_PROJECT: "agent:test:project",
     });
-    expect(loaded?.token).toBe("file-secret-token");
+    expect(loaded?.tokenFile).toBe(tokenPath);
     expect(loaded?.project).toBe("agent:test:project");
+    expect("token" in (loaded ?? {})).toBe(false);
   });
 });
 
