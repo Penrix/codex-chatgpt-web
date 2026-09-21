@@ -195,6 +195,42 @@ describe("WebCodex continuity binding", () => {
       .toThrow("another WebCodex project");
   });
 
+  test("rejects adopting other durable work into a task with an incomplete binding attempt", () => {
+    const cfg = config();
+    writeFileSync(cfg.statePath, JSON.stringify({
+      version: 1,
+      bindings: {
+        thread_old_bound: {
+          version: 1,
+          externalTaskId: "thread_old_bound",
+          project: "agent:test:project",
+          goalId: "wc_goal_5555555555555555",
+          workflowSessionId: "wc_sess_4444444444444444",
+          goalRevision: 2,
+          createdAt: "2026-09-21T00:00:00.000Z",
+          updatedAt: "2026-09-21T00:00:00.000Z"
+        }
+      },
+      attempts: {
+        thread_new_pending: {
+          version: 1,
+          externalTaskId: "thread_new_pending",
+          project: "agent:test:project",
+          goalId: "wc_goal_3333333333333333",
+          goalRevision: 1,
+          phase: "before_work_on_project",
+          createdAt: "2026-09-21T00:00:01.000Z",
+          updatedAt: "2026-09-21T00:00:01.000Z"
+        }
+      }
+    }));
+    const bridge = new WebCodexContinuityBridge(cfg, async () => {
+      throw new Error("network should not be used");
+    });
+    expect(() => bridge.adoptTask("thread_new_pending", "thread_old_bound"))
+      .toThrow("incomplete WebCodex binding attempt");
+  });
+
   test("adoption is explicit and preserves exact durable identities", async () => {
     const fetchImpl: typeof fetch = async (_input, init) => {
       const body = JSON.parse(String(init?.body)) as { tool: string };
