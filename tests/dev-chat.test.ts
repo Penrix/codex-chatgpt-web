@@ -13,6 +13,7 @@ import {
   type BrokerToolResult,
 } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
+import { WebCodexContinuityBridge } from "../src/continuity/webcodex";
 import { defaultDevChatModel, DEV_CHAT_TOOLS, DevChatDriver } from "../src/dev-chat/driver";
 import {
   createDevCoherentContextPayload,
@@ -136,6 +137,38 @@ test("named DEV state and deterministic context filler persist independently", (
   expect(store.list()).toMatchObject([{ name: "compaction-lab", inputItems: 1 }]);
   store.reset(opened.state);
   expect(store.load("compaction-lab")).toMatchObject({ input: [], turns: 0, syntheticFills: 0 });
+});
+
+test("WebCodex recovery refuses to splice durable work into a non-empty DEV thread", async () => {
+  const root = scratch("cgw-dev-webcodex-recovery-guard");
+  const tokenFile = join(root, "webcodex-token");
+  writeFileSync(tokenFile, "test-token\n", { mode: 0o600 });
+  const continuity = new WebCodexContinuityBridge({
+    baseUrl: "http://127.0.0.1:9876",
+    tokenFile,
+    project: "agent:test:project",
+    statePath: join(root, "continuity.json"),
+  }, async () => {
+    throw new Error("network should not be used");
+  });
+  const store = new DevChatStore(join(root, "chats"));
+  const driver = new DevChatDriver(
+    defaultConfig("full"),
+    store,
+    (_provider: CodexProviderConfig): ProviderAdapter => {
+      throw new Error("adapter should not be used");
+    },
+    root,
+    { biggerContext: false },
+    continuity,
+  );
+  const state = driver.open("guard", "chatgpt-web/high").state;
+  state.input.push({ type: "message", role: "user", content: "already working" });
+  state.turns = 1;
+  store.save(state);
+
+  await expect(driver.recoverFrom(state, "thread_old"))
+    .rejects.toThrow("requires a fresh empty DEV thread");
 });
 
 test("coherent DEV MCP payloads are bounded, deterministic, and distinct", () => {
