@@ -31,9 +31,22 @@ export interface WebCodexContinuityBinding {
   adoptedFromTaskId?: string;
 }
 
+export interface WebCodexContinuityAttempt {
+  version: 1;
+  externalTaskId: string;
+  project: string;
+  goalId: string;
+  goalRevision: number;
+  phase: "before_work_on_project" | "before_associate_goal_session";
+  workflowSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface WebCodexContinuityState {
   version: 1;
   bindings: Record<string, WebCodexContinuityBinding>;
+  attempts: Record<string, WebCodexContinuityAttempt>;
 }
 
 interface RuntimeToolEnvelope {
@@ -208,7 +221,51 @@ function parseState(raw: string, path: string): WebCodexContinuityState {
         : {}),
     };
   }
-  return { version: 1, bindings };
+  const rawAttempts = root.attempts === undefined ? {} : root.attempts;
+  if (!rawAttempts || typeof rawAttempts !== "object" || Array.isArray(rawAttempts)) {
+    throw new WebCodexContinuityError(`WebCodex continuity attempts state is invalid: ${path}`, "state_error");
+  }
+  const attempts: Record<string, WebCodexContinuityAttempt> = {};
+  for (const [key, rawAttempt] of Object.entries(rawAttempts as Record<string, unknown>)) {
+    if (!rawAttempt || typeof rawAttempt !== "object" || Array.isArray(rawAttempt)) {
+      throw new WebCodexContinuityError(`WebCodex continuity attempt is invalid: ${key}`, "state_error");
+    }
+    const attempt = rawAttempt as Record<string, unknown>;
+    const externalTaskId = exactTaskId(String(attempt.externalTaskId ?? ""));
+    const phase = attempt.phase;
+    const workflowSessionId = attempt.workflowSessionId;
+    if (
+      key !== stateKey(externalTaskId)
+      || attempt.version !== 1
+      || typeof attempt.project !== "string"
+      || typeof attempt.goalId !== "string"
+      || !GOAL_ID.test(attempt.goalId)
+      || typeof attempt.goalRevision !== "number"
+      || !Number.isSafeInteger(attempt.goalRevision)
+      || attempt.goalRevision < 1
+      || (phase !== "before_work_on_project" && phase !== "before_associate_goal_session")
+      || (workflowSessionId !== undefined && (
+        typeof workflowSessionId !== "string" || !WORKFLOW_SESSION_ID.test(workflowSessionId)
+      ))
+      || (phase === "before_associate_goal_session" && typeof workflowSessionId !== "string")
+      || typeof attempt.createdAt !== "string"
+      || typeof attempt.updatedAt !== "string"
+    ) {
+      throw new WebCodexContinuityError(`WebCodex continuity attempt has invalid fields: ${key}`, "state_error");
+    }
+    attempts[key] = {
+      version: 1,
+      externalTaskId,
+      project: attempt.project,
+      goalId: attempt.goalId,
+      goalRevision: attempt.goalRevision,
+      phase,
+      ...(typeof workflowSessionId === "string" ? { workflowSessionId } : {}),
+      createdAt: attempt.createdAt,
+      updatedAt: attempt.updatedAt,
+    };
+  }
+  return { version: 1, bindings, attempts };
 }
 
 export function loadWebCodexContinuityConfig(
@@ -310,12 +367,24 @@ export class WebCodexContinuityBridge {
     return this.loadState().bindings[stateKey(id)];
   }
 
+  getPendingAttempt(externalTaskId: string): WebCodexContinuityAttempt | undefined {
+    const id = exactTaskId(externalTaskId);
+    return this.loadState().attempts[stateKey(id)];
+  }
+
   async bindTask(externalTaskId: string, instruction: string): Promise<WebCodexContinuityBinding> {
     const taskId = exactTaskId(externalTaskId);
     const objective = boundedUtf8(instruction, MAX_OBJECTIVE_BYTES);
     if (!objective) throw new WebCodexContinuityError("WebCodex continuity instruction is empty", "state_error");
 
     const state = this.loadState();
+    const pending = state.attempts[stateKey(taskId)];
+    if (pending) {
+      throw new WebCodexContinuityError(
+        `WebCodex continuity binding for ${taskId} is incomplete at ${pending.phase}; reconcile the exact Goal/Session before retrying`,
+        "outcome_unknown",
+      );
+    }
     const existing = state.bindings[stateKey(taskId)];
     if (existing) {
       if (existing.project !== this.config.project) {
@@ -333,6 +402,19 @@ export class WebCodexContinuityBridge {
     }, "idempotent_effect");
     const { goalId, revision } = goalIdentity(created);
 
+    const attemptCreatedAt = new Date().toISOString();
+    state.attempts[stateKey(taskId)] = {
+      version: 1,
+      externalTaskId: taskId,
+      project: this.config.project,
+      goalId,
+      goalRevision: revision,
+      phase: "before_work_on_project",
+      createdAt: attemptCreatedAt,
+      updatedAt: attemptCreatedAt,
+    };
+    this.saveState(state);
+
     const work = await this.callTool("work_on_project", {
       project: this.config.project,
       instruction: objective,
@@ -341,6 +423,14 @@ export class WebCodexContinuityBridge {
     if (!workflowSessionId || !WORKFLOW_SESSION_ID.test(workflowSessionId)) {
       throw new WebCodexContinuityError("work_on_project response omitted a valid Workflow Session identity", "runtime_error");
     }
+
+    state.attempts[stateKey(taskId)] = {
+      ...state.attempts[stateKey(taskId)]!,
+      phase: "before_associate_goal_session",
+      workflowSessionId,
+      updatedAt: new Date().toISOString(),
+    };
+    this.saveState(state);
 
     await this.callTool("associate_goal_workflow_session", {
       goal_id: goalId,
@@ -360,6 +450,7 @@ export class WebCodexContinuityBridge {
       updatedAt: now,
     };
     state.bindings[stateKey(taskId)] = binding;
+    delete state.attempts[stateKey(taskId)];
     this.saveState(state);
     return binding;
   }
@@ -470,7 +561,7 @@ export class WebCodexContinuityBridge {
     try {
       return parseState(readFileSync(this.statePath, "utf8"), this.statePath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, bindings: {} };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, bindings: {}, attempts: {} };
       throw error;
     }
   }
