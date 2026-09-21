@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { atomicWriteFile } from "../config";
 import { SUMMARY_PREFIX } from "../responses/compaction";
@@ -12,7 +12,7 @@ const MAX_CHECKPOINT_BYTES = 2 * 1024;
 
 export interface WebCodexContinuityConfig {
   baseUrl: string;
-  token: string;
+  tokenFile: string;
   project: string;
   statePath: string;
 }
@@ -229,6 +229,37 @@ export function loadWebCodexContinuityConfig(
   };
 }
 
+function readWebCodexToken(path: string): string {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    throw new WebCodexContinuityError(
+      `WebCodex continuity token file is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      "invalid_config",
+    );
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new WebCodexContinuityError("WebCodex continuity token path must be a regular non-symlink file", "invalid_config");
+  }
+  if (stat.size < 1 || stat.size > 16 * 1024) {
+    throw new WebCodexContinuityError("WebCodex continuity token file must contain 1..16384 bytes", "invalid_config");
+  }
+  let token: string;
+  try {
+    token = readFileSync(path, "utf8").trim();
+  } catch (error) {
+    throw new WebCodexContinuityError(
+      `WebCodex continuity token file could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      "invalid_config",
+    );
+  }
+  if (!token || /[\r\n]/.test(token)) {
+    throw new WebCodexContinuityError("WebCodex continuity token file must contain one non-empty token line", "invalid_config");
+  }
+  return token;
+}
+
 export function compactionSummaryFromReplacementHistory(history: unknown[]): string | undefined {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const item = history[index];
@@ -257,15 +288,16 @@ export function compactionSummaryFromReplacementHistory(history: unknown[]): str
 export class WebCodexContinuityBridge {
   private readonly baseUrl: string;
   private readonly statePath: string;
+  private readonly token: string;
 
   constructor(
     readonly config: WebCodexContinuityConfig,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {
     this.baseUrl = normalizedBaseUrl(config.baseUrl);
-    if (!config.token.trim()) throw new WebCodexContinuityError("WebCodex continuity token is empty", "invalid_config");
     if (!config.project.trim()) throw new WebCodexContinuityError("WebCodex continuity project is empty", "invalid_config");
     this.statePath = resolve(config.statePath);
+    this.token = readWebCodexToken(resolve(config.tokenFile));
   }
 
   getBinding(externalTaskId: string): WebCodexContinuityBinding | undefined {
@@ -454,7 +486,7 @@ export class WebCodexContinuityBridge {
       response = await this.fetchImpl(`${this.baseUrl}/api/tools/call`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.config.token}`,
+          authorization: `Bearer ${this.token}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ tool, params }),
