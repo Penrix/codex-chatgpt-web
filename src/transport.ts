@@ -5,11 +5,11 @@ import {
   inspectBrowserLoginCapabilities,
   loginToChatGpt,
   storedBrowserLoginCapabilities,
+  type BrowserLoginConfig,
   type BrowserLoginResult,
 } from "./browser-login";
 import {
   defaultChromeExecutable,
-  defaultConfig,
   expandUserPath,
 } from "./config";
 import {
@@ -116,27 +116,23 @@ export class ManagedChatGptWebTransport {
     this.worker = ChatGptBrowserWorker.create(this.config);
   }
 
-  hasLogin(): boolean {
-    const config = {
-      ...defaultConfig("browser-only"),
-      browserHost: "managed-chrome" as const,
+  private loginConfig(): BrowserLoginConfig {
+    return {
       storageStatePath: this.config.storageStatePath,
       chromeExecutablePath: this.config.chromeExecutablePath,
-      headed: this.config.headed,
     };
-    return browserLoginStateExists(config);
+  }
+
+  hasLogin(): boolean {
+    return browserLoginStateExists(this.loginConfig());
   }
 
   async login(timeoutMs?: number): Promise<BrowserLoginResult> {
     await this.worker.close();
-    const config = {
-      ...defaultConfig("browser-only"),
-      browserHost: "managed-chrome" as const,
-      storageStatePath: this.config.storageStatePath,
-      chromeExecutablePath: this.config.chromeExecutablePath,
-      headed: true,
-    };
-    const result = await loginToChatGpt(config, timeoutMs === undefined ? {} : { timeoutMs });
+    const result = await loginToChatGpt(
+      this.loginConfig(),
+      timeoutMs === undefined ? {} : { timeoutMs },
+    );
     this.capabilities = {
       localToolsEnabled: false,
       solAvailable: result.solAvailable,
@@ -212,13 +208,7 @@ export class ManagedChatGptWebTransport {
   }
 
   private async loadCapabilities(): Promise<ChatGptWebCapabilities> {
-    const config = {
-      ...defaultConfig("browser-only"),
-      browserHost: "managed-chrome" as const,
-      storageStatePath: this.config.storageStatePath,
-      chromeExecutablePath: this.config.chromeExecutablePath,
-      headed: this.config.headed,
-    };
+    const config = this.loginConfig();
     const stored = storedBrowserLoginCapabilities(config);
     if (typeof stored.solAvailable === "boolean" && typeof stored.proAvailable === "boolean") {
       return {
