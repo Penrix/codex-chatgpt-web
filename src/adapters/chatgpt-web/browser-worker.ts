@@ -2056,8 +2056,8 @@ export class ChatGptBrowserWorker {
     return new ChatGptBrowserWorker(config);
   }
 
-  /** Shared worker cache retained for the existing codex-chatgpt-web server/provider path. */
-  static forConfig(config: ResolvedBrowserConfig): ChatGptBrowserWorker {
+  static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
+    const config = resolveBrowserConfig(provider);
     const key = JSON.stringify(config);
     let worker = workers.get(key);
     if (!worker) {
@@ -2065,10 +2065,6 @@ export class ChatGptBrowserWorker {
       workers.set(key, worker);
     }
     return worker;
-  }
-
-  static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
-    return ChatGptBrowserWorker.forConfig(resolveBrowserConfig(provider));
   }
 
   private browser?: Browser;
