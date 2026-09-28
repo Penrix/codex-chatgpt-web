@@ -24,6 +24,26 @@ describe("managed ChatGPT Web transport library", () => {
     }
   });
 
+  it("keeps each library transport lifecycle independent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-web-transport-owner-"));
+    const options = {
+      storageStatePath: join(root, "storage-state.json"),
+      chromeExecutablePath: process.execPath,
+      headed: true,
+    };
+    const first = new ManagedChatGptWebTransport(options);
+    const second = new ManagedChatGptWebTransport(options);
+    try {
+      expect(first).not.toBe(second);
+      expect(first.hasLogin()).toBe(false);
+      expect(second.hasLogin()).toBe(false);
+    } finally {
+      await first.close();
+      await second.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("exports only automatic browser backend identities", () => {
     expect(CHATGPT_WEB_BACKEND_MODEL).toBe("gpt-5.6-sol");
     expect(CHATGPT_WEB_LUNA_BACKEND_MODEL).toBe("gpt-5.6-luna");
