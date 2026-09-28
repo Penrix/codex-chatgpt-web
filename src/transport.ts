@@ -104,7 +104,7 @@ export class ManagedChatGptWebTransport {
   private readonly worker: ChatGptBrowserWorker;
   private capabilities?: ChatGptWebCapabilities;
 
-  constructor(private readonly options: ManagedChatGptWebTransportOptions) {
+  constructor(options: ManagedChatGptWebTransportOptions) {
     this.config = managedConfig(options);
     this.worker = ChatGptBrowserWorker.forConfig(this.config);
   }
@@ -129,7 +129,7 @@ export class ManagedChatGptWebTransport {
       chromeExecutablePath: this.config.chromeExecutablePath,
       headed: true,
     };
-    const result = await loginToChatGpt(config, ...(timeoutMs === undefined ? [] : [{ timeoutMs }]));
+    const result = await loginToChatGpt(config, timeoutMs === undefined ? {} : { timeoutMs });
     this.capabilities = {
       localToolsEnabled: false,
       solAvailable: result.solAvailable,
