@@ -2051,6 +2051,12 @@ export function insertPlainTextIntoComposer(element: HTMLElement, value: string)
 }
 
 export class ChatGptBrowserWorker {
+  /** Independent lifecycle owner for library consumers. */
+  static create(config: ResolvedBrowserConfig): ChatGptBrowserWorker {
+    return new ChatGptBrowserWorker(config);
+  }
+
+  /** Shared worker cache retained for the existing codex-chatgpt-web server/provider path. */
   static forConfig(config: ResolvedBrowserConfig): ChatGptBrowserWorker {
     const key = JSON.stringify(config);
     let worker = workers.get(key);
