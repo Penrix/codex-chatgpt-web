@@ -23,6 +23,11 @@ import {
 import { ChatGptWebAdapterError } from "./adapters/chatgpt-web/adapter-error";
 import type { ChatGptWebCapabilities } from "./adapters/chatgpt-web/model";
 
+export {
+  CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
+} from "./chatgpt-web-models";
+
 export type ManagedChatGptWebModel = ChatGptWebAutomaticBackendModel;
 export type ManagedChatGptWebEffort = ChatGptWebAdapterEffort;
 
