@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
   browserLoginStateExists,
+  inspectBrowserLoginCapabilities,
   loginToChatGpt,
+  storedBrowserLoginCapabilities,
   type BrowserLoginResult,
 } from "./browser-login";
 import {
@@ -144,22 +146,29 @@ export class ManagedChatGptWebTransport {
   }
 
   async inspectSession(): Promise<ManagedChatGptWebSessionInfo> {
-    const inspected = await this.worker.inspectSession(true);
-    if (typeof inspected.solAvailable !== "boolean" || typeof inspected.proAvailable !== "boolean") {
-      throw new Error("ChatGPT session inspection did not report model capabilities");
+    try {
+      const inspected = await this.worker.inspectSession(true);
+      if (typeof inspected.solAvailable !== "boolean" || typeof inspected.proAvailable !== "boolean") {
+        throw new Error("ChatGPT session inspection did not report model capabilities");
+      }
+      this.capabilities = {
+        localToolsEnabled: false,
+        solAvailable: inspected.solAvailable,
+        proAvailable: inspected.proAvailable,
+      };
+      return {
+        authenticated: true,
+        temporary: true,
+        url: inspected.url,
+        solAvailable: inspected.solAvailable,
+        proAvailable: inspected.proAvailable,
+      };
+    } finally {
+      // Managed-Chrome session inspection uses the worker's maintenance browser.
+      // Close it so a later real turn cannot open a second managed browser while
+      // the maintenance browser remains orphaned.
+      await this.worker.close();
     }
-    this.capabilities = {
-      localToolsEnabled: false,
-      solAvailable: inspected.solAvailable,
-      proAvailable: inspected.proAvailable,
-    };
-    return {
-      authenticated: true,
-      temporary: true,
-      url: inspected.url,
-      solAvailable: inspected.solAvailable,
-      proAvailable: inspected.proAvailable,
-    };
   }
 
   async run(turn: ManagedChatGptWebTurn): Promise<string> {
@@ -203,7 +212,22 @@ export class ManagedChatGptWebTransport {
   }
 
   private async loadCapabilities(): Promise<ChatGptWebCapabilities> {
-    const inspected = await this.inspectSession();
+    const config = {
+      ...defaultConfig("browser-only"),
+      browserHost: "managed-chrome" as const,
+      storageStatePath: this.config.storageStatePath,
+      chromeExecutablePath: this.config.chromeExecutablePath,
+      headed: this.config.headed,
+    };
+    const stored = storedBrowserLoginCapabilities(config);
+    if (typeof stored.solAvailable === "boolean" && typeof stored.proAvailable === "boolean") {
+      return {
+        localToolsEnabled: false,
+        solAvailable: stored.solAvailable,
+        proAvailable: stored.proAvailable,
+      };
+    }
+    const inspected = await inspectBrowserLoginCapabilities(config);
     return {
       localToolsEnabled: false,
       solAvailable: inspected.solAvailable,
