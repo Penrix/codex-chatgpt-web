@@ -69,7 +69,7 @@ function managedConfig(options: ManagedChatGptWebTransportOptions): ResolvedBrow
     options.chromeExecutablePath?.trim() || defaultChromeExecutable(),
   ));
   return {
-    appName: "DSH ChatGPT Web",
+    appName: "ChatGPT Web Transport",
     browserHost: "managed-chrome",
     storageStatePath,
     chromeExecutablePath,
@@ -113,7 +113,7 @@ export class ManagedChatGptWebTransport {
 
   constructor(options: ManagedChatGptWebTransportOptions) {
     this.config = managedConfig(options);
-    this.worker = ChatGptBrowserWorker.forConfig(this.config);
+    this.worker = ChatGptBrowserWorker.create(this.config);
   }
 
   hasLogin(): boolean {
