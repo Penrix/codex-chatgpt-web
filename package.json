@@ -17,6 +17,7 @@
     "codex-chatgpt-web": "./src/cli.ts"
   },
   "files": [
+    "src",
     "dist",
     "README.md",
     "LICENSE",
@@ -86,5 +87,8 @@
     "mcp",
     "playwright"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "exports": {
+    "./transport": "./src/transport.ts"
+  }
 }
