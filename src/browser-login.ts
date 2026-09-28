@@ -12,6 +12,8 @@ import {
 } from "./chatgpt-session";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
+export type BrowserLoginConfig = Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">;
+
 export interface BrowserLoginResult {
   storageStatePath: string;
   accountSurfaceUrl: string;
@@ -151,7 +153,7 @@ function writeVerificationMarker(
 }
 
 async function inspectStoredState(
-  config: AppConfig,
+  config: BrowserLoginConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
 ): Promise<ChatGptWebAccountCapabilities & { url: string }> {
   const verifierBrowser = await chromium.launch({
@@ -177,7 +179,7 @@ async function inspectStoredState(
   }
 }
 
-export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<ChatGptWebAccountCapabilities> {
+export async function inspectBrowserLoginCapabilities(config: BrowserLoginConfig): Promise<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
   writeVerificationMarker(config.storageStatePath, inspected);
@@ -185,7 +187,7 @@ export async function inspectBrowserLoginCapabilities(config: AppConfig): Promis
 }
 
 export function storedBrowserLoginCapabilities(
-  config: AppConfig,
+  config: BrowserLoginConfig,
 ): Partial<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) return {};
   try {
@@ -200,7 +202,7 @@ export function storedBrowserLoginCapabilities(
 }
 
 export async function captureSystemBrowserLogin(
-  config: Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">,
+  config: BrowserLoginConfig,
   options: SystemBrowserLoginOptions,
 ): Promise<SystemBrowserLoginCapture> {
   if (process.platform !== "darwin") {
@@ -356,7 +358,7 @@ export async function captureSystemBrowserLogin(
 }
 
 export async function captureSystemBrowserLoginToFile(
-  config: Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">,
+  config: BrowserLoginConfig,
   options: SystemBrowserLoginOptions,
 ): Promise<void> {
   const capture = await captureSystemBrowserLogin(config, options);
@@ -367,7 +369,7 @@ export async function captureSystemBrowserLoginToFile(
 }
 
 export async function loginToChatGpt(
-  config: AppConfig,
+  config: BrowserLoginConfig,
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
   if (!existsSync(config.chromeExecutablePath)) {
@@ -434,7 +436,7 @@ export async function loginToChatGpt(
   }
 }
 
-export function browserLoginStateExists(config: AppConfig): boolean {
+export function browserLoginStateExists(config: BrowserLoginConfig): boolean {
   if (!existsSync(config.storageStatePath)) return false;
   const markerPath = loginVerificationMarkerPath(config.storageStatePath);
   if (!existsSync(markerPath)) return false;
@@ -446,7 +448,7 @@ export function browserLoginStateExists(config: AppConfig): boolean {
   }
 }
 
-export async function checkBrowserEngine(config: AppConfig): Promise<void> {
+export async function checkBrowserEngine(config: BrowserLoginConfig): Promise<void> {
   if (!existsSync(config.chromeExecutablePath)) throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}`);
   const browser = await chromium.launch({
     executablePath: config.chromeExecutablePath,
