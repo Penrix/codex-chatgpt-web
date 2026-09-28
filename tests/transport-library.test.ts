@@ -7,6 +7,7 @@ import {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
 } from "../src/chatgpt-web-models";
 import { ManagedChatGptWebTransport } from "../src/transport";
+import { ChatGptBrowserWorker, type ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 
 describe("managed ChatGPT Web transport library", () => {
   it("constructs without the desktop Launcher or a Responses server", async () => {
@@ -22,6 +23,18 @@ describe("managed ChatGPT Web transport library", () => {
       await transport.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("creates independent browser workers for library ownership", () => {
+    const config: ResolvedBrowserConfig = {
+      appName: "test",
+      browserHost: "managed-chrome",
+      storageStatePath: "/tmp/unused-storage-state.json",
+      chromeExecutablePath: process.execPath,
+      headed: true,
+      autoApproveToolCalls: false,
+    };
+    expect(ChatGptBrowserWorker.create(config)).not.toBe(ChatGptBrowserWorker.create(config));
   });
 
   it("keeps each library transport lifecycle independent", async () => {
