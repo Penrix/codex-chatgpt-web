@@ -2051,8 +2051,7 @@ export function insertPlainTextIntoComposer(element: HTMLElement, value: string)
 }
 
 export class ChatGptBrowserWorker {
-  static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
-    const config = resolveBrowserConfig(provider);
+  static forConfig(config: ResolvedBrowserConfig): ChatGptBrowserWorker {
     const key = JSON.stringify(config);
     let worker = workers.get(key);
     if (!worker) {
@@ -2060,6 +2059,10 @@ export class ChatGptBrowserWorker {
       workers.set(key, worker);
     }
     return worker;
+  }
+
+  static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
+    return ChatGptBrowserWorker.forConfig(resolveBrowserConfig(provider));
   }
 
   private browser?: Browser;
