@@ -89,6 +89,9 @@
   ],
   "license": "MIT",
   "exports": {
-    "./transport": "./src/transport.ts"
+    "./transport": {
+      "types": "./src/transport.d.ts",
+      "default": "./src/transport.ts"
+    }
   }
 }
