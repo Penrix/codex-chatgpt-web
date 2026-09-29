@@ -67,6 +67,7 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
   expect(existsSync(config.chromeExecutablePath)).toBe(true);
 
   const cookieName = "codex_cdp_profile_probe";
+  const sessionCookieName = "codex_cdp_session_probe";
   let seeded: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
   let restoredBrowser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -78,24 +79,42 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
       headless: true,
       args: ["--no-first-run", "--no-default-browser-check"],
     });
-    await seeded.addCookies([{
-      name: cookieName,
-      value: "persisted",
-      domain: ".chatgpt.com",
-      path: "/",
-      expires: Math.floor(Date.now() / 1000) + 3600,
-      httpOnly: true,
-      secure: true,
-      sameSite: "Lax",
-    }]);
-    expect((await seeded.cookies("https://chatgpt.com/"))
-      .some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    await seeded.addCookies([
+      {
+        name: cookieName,
+        value: "persisted",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: Math.floor(Date.now() / 1000) + 3600,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+      {
+        name: sessionCookieName,
+        value: "session",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+    ]);
+    const seededCookies = await seeded.cookies("https://chatgpt.com/");
+    expect(seededCookies.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    expect(seededCookies.some(cookie =>
+      cookie.name === sessionCookieName && cookie.value === "session" && cookie.expires === -1
+    )).toBe(true);
     await seeded.close();
     seeded = undefined;
 
     session = await openPersistentProfileCdpSession(config, root, 10_000);
     const restored = await session.context.cookies("https://chatgpt.com/");
     expect(restored.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    expect(restored.some(cookie =>
+      cookie.name === sessionCookieName && cookie.value === "session" && cookie.expires === -1
+    )).toBe(true);
 
     const rawState = await session.context.storageState();
     const rawProbe = rawState.cookies.find(cookie => cookie.name === cookieName);
@@ -103,6 +122,12 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
       throw new Error("CDP storageState omitted the persisted probe cookie");
     }
     expect(rawProbe.value).toBe("persisted");
+    const rawSessionProbe = rawState.cookies.find(cookie => cookie.name === sessionCookieName);
+    if (!rawSessionProbe) {
+      throw new Error("CDP storageState omitted the restored session probe cookie");
+    }
+    expect(rawSessionProbe.value).toBe("session");
+    expect(rawSessionProbe.expires).toBe(-1);
 
     const sanitized = sanitizeBrowserLoginStorageState(rawState);
     const sanitizedProbe = sanitized.cookies.find(cookie => cookie.name === cookieName);
@@ -111,6 +136,12 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
     }
     expect(sanitizedProbe.value).toBe("persisted");
     expect(["chatgpt.com", ".chatgpt.com"]).toContain(sanitizedProbe.domain);
+    const sanitizedSessionProbe = sanitized.cookies.find(cookie => cookie.name === sessionCookieName);
+    if (!sanitizedSessionProbe) {
+      throw new Error("Login-state sanitizer removed restored session probe cookie");
+    }
+    expect(sanitizedSessionProbe.value).toBe("session");
+    expect(sanitizedSessionProbe.expires).toBe(-1);
 
     restoredBrowser = await chromium.launch({
       executablePath: config.chromeExecutablePath,
@@ -122,6 +153,9 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
       const imported = await restoredContext.cookies("https://chatgpt.com/");
       expect(imported.some(cookie =>
         cookie.name === cookieName && cookie.value === "persisted"
+      )).toBe(true);
+      expect(imported.some(cookie =>
+        cookie.name === sessionCookieName && cookie.value === "session"
       )).toBe(true);
     } finally {
       await restoredContext.close();
