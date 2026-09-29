@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   adoptPersistentBrowserLogin,
   browserLoginStateExists,
@@ -113,7 +113,7 @@ function submittedTurnFailure(phase: SubmissionPhase, error: unknown): Error {
 export class ManagedChatGptWebTransport {
   private readonly config: ResolvedBrowserConfig;
   private readonly worker: ChatGptBrowserWorker;
-  private readonly loginProfileDir?: string;
+  private readonly loginProfileDir: string;
   private readonly reusableLoginProfileDirs: string[];
   private capabilities?: ChatGptWebCapabilities;
 
@@ -121,7 +121,7 @@ export class ManagedChatGptWebTransport {
     this.config = managedConfig(options);
     this.worker = ChatGptBrowserWorker.create(this.config);
     this.loginProfileDir = resolve(expandUserPath(
-      options.loginProfileDir ?? resolve(this.config.storageStatePath, ".."),
+      options.loginProfileDir ?? dirname(this.config.storageStatePath),
     ));
     this.reusableLoginProfileDirs = [...new Set(
       (options.reusableLoginProfileDirs ?? [])
@@ -175,7 +175,7 @@ export class ManagedChatGptWebTransport {
 
     const result = await loginToPersistentChatGptProfile(
       this.loginConfig(),
-      this.loginProfileDir ?? resolve(expandUserPath("./chatgpt-profile")),
+      this.loginProfileDir,
       timeoutMs === undefined ? {} : { timeoutMs },
     );
     this.capabilities = {
@@ -190,7 +190,7 @@ export class ManagedChatGptWebTransport {
     await this.worker.close();
     const result = await loginToPersistentChatGptProfile(
       this.loginConfig(),
-      this.loginProfileDir ?? resolve(expandUserPath("./chatgpt-profile")),
+      this.loginProfileDir,
       timeoutMs === undefined ? {} : { timeoutMs },
     );
     this.capabilities = {
