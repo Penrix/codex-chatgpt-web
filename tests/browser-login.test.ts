@@ -96,12 +96,20 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
     const restored = await session.context.cookies("https://chatgpt.com/");
     expect(restored.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
 
-    const sanitized = sanitizeBrowserLoginStorageState(await session.context.storageState());
-    expect(sanitized.cookies.some(cookie =>
-      cookie.name === cookieName
-      && cookie.value === "persisted"
-      && cookie.domain.replace(/^\\.+/, "") === "chatgpt.com"
-    )).toBe(true);
+    const rawState = await session.context.storageState();
+    const rawProbe = rawState.cookies.find(cookie => cookie.name === cookieName);
+    if (!rawProbe) {
+      throw new Error("CDP storageState omitted the persisted probe cookie");
+    }
+    expect(rawProbe.value).toBe("persisted");
+
+    const sanitized = sanitizeBrowserLoginStorageState(rawState);
+    const sanitizedProbe = sanitized.cookies.find(cookie => cookie.name === cookieName);
+    if (!sanitizedProbe) {
+      throw new Error("Login-state sanitizer removed persisted probe cookie: " + JSON.stringify(rawProbe));
+    }
+    expect(sanitizedProbe.value).toBe("persisted");
+    expect(sanitizedProbe.domain.replace(/^\\.+/, "")).toBe("chatgpt.com");
   } finally {
     await session?.close();
     await seeded?.close();
