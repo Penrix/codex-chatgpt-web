@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
+  adoptPersistentBrowserLogin,
   browserLoginStateExists,
+  browserProfileHasLoginEvidence,
   inspectBrowserLoginCapabilities,
   loginToChatGpt,
   storedBrowserLoginCapabilities,
@@ -39,6 +41,8 @@ export interface ManagedChatGptWebTransportOptions {
   headed?: boolean;
   turnTimeoutMs?: number;
   browserDiagnosticsPath?: string;
+  loginProfileDir?: string;
+  reusableLoginProfileDirs?: string[];
 }
 
 export interface ManagedChatGptWebTurn {
@@ -109,11 +113,20 @@ function submittedTurnFailure(phase: SubmissionPhase, error: unknown): Error {
 export class ManagedChatGptWebTransport {
   private readonly config: ResolvedBrowserConfig;
   private readonly worker: ChatGptBrowserWorker;
+  private readonly loginProfileDir?: string;
+  private readonly reusableLoginProfileDirs: string[];
   private capabilities?: ChatGptWebCapabilities;
 
   constructor(options: ManagedChatGptWebTransportOptions) {
     this.config = managedConfig(options);
     this.worker = ChatGptBrowserWorker.create(this.config);
+    this.loginProfileDir = options.loginProfileDir
+      ? resolve(expandUserPath(options.loginProfileDir))
+      : undefined;
+    this.reusableLoginProfileDirs = [...new Set(
+      (options.reusableLoginProfileDirs ?? [])
+        .map(value => resolve(expandUserPath(value))),
+    )];
   }
 
   private loginConfig(): BrowserLoginConfig {
@@ -127,11 +140,61 @@ export class ManagedChatGptWebTransport {
     return browserLoginStateExists(this.loginConfig());
   }
 
+  async ensureLogin(timeoutMs?: number): Promise<"stored" | "reused" | "interactive"> {
+    if (this.hasLogin()) return "stored";
+    await this.worker.close();
+
+    const candidates = this.reusableLoginProfileDirs.filter(browserProfileHasLoginEvidence);
+    const failures: string[] = [];
+    for (const profileDir of candidates) {
+      try {
+        const result = await adoptPersistentBrowserLogin(
+          this.loginConfig(),
+          profileDir,
+          { timeoutMs: Math.min(timeoutMs ?? 30_000, 30_000) },
+        );
+        this.capabilities = {
+          localToolsEnabled: false,
+          solAvailable: result.solAvailable,
+          proAvailable: result.proAvailable,
+        };
+        return "reused";
+      } catch (error) {
+        failures.push(`${profileDir}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (candidates.length > 0) {
+      throw new Error(
+        "Existing ChatGPT login profile(s) were found but could not be reused. "
+        + "Refusing to request another sign-in. "
+        + failures.join(" | "),
+      );
+    }
+
+    const result = await loginToChatGpt(
+      this.loginConfig(),
+      {
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(this.loginProfileDir ? { profileDir: this.loginProfileDir } : {}),
+      },
+    );
+    this.capabilities = {
+      localToolsEnabled: false,
+      solAvailable: result.solAvailable,
+      proAvailable: result.proAvailable,
+    };
+    return "interactive";
+  }
+
   async login(timeoutMs?: number): Promise<BrowserLoginResult> {
     await this.worker.close();
     const result = await loginToChatGpt(
       this.loginConfig(),
-      timeoutMs === undefined ? {} : { timeoutMs },
+      {
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(this.loginProfileDir ? { profileDir: this.loginProfileDir } : {}),
+      },
     );
     this.capabilities = {
       localToolsEnabled: false,
