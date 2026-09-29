@@ -43,6 +43,7 @@ export interface ManagedChatGptWebTransportOptions {
   browserDiagnosticsPath?: string;
   loginProfileDir?: string;
   reusableLoginProfileDirs?: string[];
+  allowInteractiveLogin?: boolean;
 }
 
 export interface ManagedChatGptWebTurn {
@@ -115,6 +116,7 @@ export class ManagedChatGptWebTransport {
   private readonly worker: ChatGptBrowserWorker;
   private readonly loginProfileDir: string;
   private readonly reusableLoginProfileDirs: string[];
+  private readonly allowInteractiveLogin: boolean;
   private capabilities?: ChatGptWebCapabilities;
 
   constructor(options: ManagedChatGptWebTransportOptions) {
@@ -127,6 +129,7 @@ export class ManagedChatGptWebTransport {
       (options.reusableLoginProfileDirs ?? [])
         .map(value => resolve(expandUserPath(value))),
     )];
+    this.allowInteractiveLogin = options.allowInteractiveLogin !== false;
   }
 
   private loginConfig(): BrowserLoginConfig {
@@ -170,6 +173,11 @@ export class ManagedChatGptWebTransport {
         "Existing ChatGPT login profile(s) were found but could not be reused. "
         + "Refusing to request another sign-in. "
         + failures.join(" | "),
+      );
+    }
+    if (!this.allowInteractiveLogin) {
+      throw new Error(
+        "No reusable ChatGPT login state was found and interactive login is disabled for this run.",
       );
     }
 
