@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -53,6 +53,34 @@ describe("managed ChatGPT Web transport library", () => {
     } finally {
       await first.close();
       await second.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not ask for another login when verified storage state already exists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-web-transport-stored-login-"));
+    const storageStatePath = join(root, "storage-state.json");
+    writeFileSync(storageStatePath, JSON.stringify({ cookies: [], origins: [] }));
+    writeFileSync(
+      storageStatePath + ".verified.json",
+      JSON.stringify({
+        version: 1,
+        authenticated: true,
+        verifiedAt: "2026-09-29T00:00:00.000Z",
+        solAvailable: true,
+        proAvailable: false,
+      }),
+    );
+    const transport = new ManagedChatGptWebTransport({
+      storageStatePath,
+      chromeExecutablePath: process.execPath,
+      loginProfileDir: root,
+      reusableLoginProfileDirs: [root],
+    });
+    try {
+      expect(await transport.ensureLogin(1)).toBe("stored");
+    } finally {
+      await transport.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
