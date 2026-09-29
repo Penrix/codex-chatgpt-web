@@ -41,6 +41,9 @@ jobs:
       - name: Verify Windows browser-login regression
         if: runner.os == 'Windows'
         run: bun test tests/browser-login.test.ts --timeout 60000
+      - name: Verify managed-Chrome storage-state privacy boundary
+        if: runner.os == 'Windows'
+        run: bun test tests/browser-worker-contract.test.ts --test-name-pattern "managed Chrome persists only sanitized login state" --timeout 30000
       - name: Prepare AVX2-independent Windows runtime
         if: runner.os == 'Windows'
         shell: pwsh
