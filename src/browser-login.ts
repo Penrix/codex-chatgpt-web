@@ -438,7 +438,7 @@ async function capturePersistentProfileLogin(
     }
     await assertAuthenticatedChatGptPage(page);
     await assertTemporaryChatPage(page);
-    const state = await context.storageState();
+    const state = sanitizeBrowserLoginStorageState(await context.storageState());
     atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
     // Authentication is already proven by the visible Temporary Chat composer.
     // Persist that fact before probing model controls so a capability-UI failure
