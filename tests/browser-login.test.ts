@@ -109,7 +109,7 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
       throw new Error("Login-state sanitizer removed persisted probe cookie: " + JSON.stringify(rawProbe));
     }
     expect(sanitizedProbe.value).toBe("persisted");
-    expect(sanitizedProbe.domain.replace(/^\\.+/, "")).toBe("chatgpt.com");
+    expect(["chatgpt.com", ".chatgpt.com"]).toContain(sanitizedProbe.domain);
   } finally {
     await session?.close();
     await seeded?.close();
