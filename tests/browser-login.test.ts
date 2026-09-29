@@ -1,42 +1,26 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   browserLoginStateExists,
+  browserProfileHasLoginEvidence,
   captureSystemBrowserLogin,
-  loginToChatGpt,
   loginVerificationMarkerPath,
   sanitizeBrowserLoginStorageState,
 } from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
 import { defaultConfig } from "../src/config";
 
-test("login starts with normal Chrome and captures state in a headed Keychain-aware context", async () => {
-  if (process.platform === "win32") return;
-  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-login-"));
-  const executable = join(root, "fake-chrome");
-  const argsLog = join(root, "args.log");
-  writeFileSync(executable, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CODEX_LOGIN_ARG_LOG\"\n", { mode: 0o700 });
-  chmodSync(executable, 0o700);
-  const previousLog = process.env.CODEX_LOGIN_ARG_LOG;
-  process.env.CODEX_LOGIN_ARG_LOG = argsLog;
+test("legacy persistent profiles with a Chrome cookie DB are recognized as reusable login evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-evidence-"));
   try {
-    const config = defaultConfig("browser-only");
-    config.chromeExecutablePath = executable;
-    config.storageStatePath = join(root, "browser", "storage-state.json");
-    await loginToChatGpt(config, { timeoutMs: 100 }).catch(() => {});
-
-    const launches = readFileSync(argsLog, "utf8").trim().split("\n");
-    const firstLaunch = launches[0] ?? "";
-    expect(firstLaunch).toContain("--new-window");
-    expect(firstLaunch).toContain("--user-data-dir=");
-    expect(firstLaunch).toContain(CHATGPT_TEMPORARY_CHAT_URL);
-    expect(firstLaunch).not.toContain("--remote-debugging-pipe");
-    expect(launches[1]).not.toContain("--headless");
+    expect(browserProfileHasLoginEvidence(root)).toBe(false);
+    const network = join(root, "Default", "Network");
+    mkdirSync(network, { recursive: true });
+    writeFileSync(join(network, "Cookies"), "not-a-real-cookie-db");
+    expect(browserProfileHasLoginEvidence(root)).toBe(true);
   } finally {
-    if (previousLog === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
-    else process.env.CODEX_LOGIN_ARG_LOG = previousLog;
     rmSync(root, { recursive: true, force: true });
   }
 });
