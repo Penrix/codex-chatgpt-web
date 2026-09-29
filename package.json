@@ -90,7 +90,7 @@
   "license": "MIT",
   "exports": {
     "./transport": {
-      "types": "./src/transport.ts",
+      "types": "./src/transport-api.ts",
       "default": "./src/transport.ts"
     }
   }
