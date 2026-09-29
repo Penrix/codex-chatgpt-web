@@ -59,20 +59,46 @@ test("legacy persistent profiles require ChatGPT-domain cookie evidence before r
   }
 });
 
-test("Windows legacy-profile adoption attaches to real Chrome over ephemeral CDP", async () => {
+test("Windows legacy-profile adoption preserves persistent cookie state across real Chrome CDP restart", async () => {
   if (process.platform !== "win32") return;
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-cdp-"));
   const config = defaultConfig("browser-only");
   expect(existsSync(config.chromeExecutablePath)).toBe(true);
 
-  let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  const cookieName = "codex_cdp_profile_probe";
+  let first: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  let second: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
   try {
-    session = await openPersistentProfileCdpSession(config, root, 10_000);
-    const page = await session.context.newPage();
-    await page.goto("data:text/html,<title>cdp-smoke</title>");
-    expect(await page.title()).toBe("cdp-smoke");
+    first = await openPersistentProfileCdpSession(config, root, 10_000);
+    await first.context.addCookies([{
+      name: cookieName,
+      value: "persisted",
+      domain: ".chatgpt.com",
+      path: "/",
+      expires: Math.floor(Date.now() / 1000) + 3600,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    }]);
+    expect((await first.context.cookies("https://chatgpt.com/"))
+      .some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    await first.close();
+    first = undefined;
+    expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
+
+    second = await openPersistentProfileCdpSession(config, root, 10_000);
+    const restored = await second.context.cookies("https://chatgpt.com/");
+    expect(restored.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+
+    const sanitized = sanitizeBrowserLoginStorageState(await second.context.storageState());
+    expect(sanitized.cookies.some(cookie =>
+      cookie.name === cookieName
+      && cookie.value === "persisted"
+      && cookie.domain.replace(/^\\.+/, "") === "chatgpt.com"
+    )).toBe(true);
   } finally {
-    await session?.close();
+    await second?.close();
+    await first?.close();
     expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   }
