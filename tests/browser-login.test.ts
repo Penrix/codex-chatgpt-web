@@ -183,7 +183,8 @@ test("passkey storage capture excludes identity-provider and partitioned state",
     cookies: [
       cookie("chatgpt", ".chatgpt.com"),
       cookie("openai", "auth.openai.com"),
-      cookie("partitioned", ".chatgpt.com", { partitionKey: "https://accounts.google.com" }),
+      cookie("first-party-partitioned", ".chatgpt.com", { partitionKey: "https://chatgpt.com" }),
+      cookie("idp-partitioned", ".chatgpt.com", { partitionKey: "https://accounts.google.com" }),
       cookie("google", ".accounts.google.com"),
       cookie("lookalike", ".chatgpt.com.attacker.example"),
     ],
@@ -192,7 +193,7 @@ test("passkey storage capture excludes identity-provider and partitioned state",
       { origin: "https://accounts.google.com", localStorage: [{ name: "idp", value: "removed" }] },
     ],
   });
-  expect(state.cookies.map(value => value.name)).toEqual(["chatgpt", "openai"]);
+  expect(state.cookies.map(value => value.name)).toEqual(["chatgpt", "openai", "first-party-partitioned"]);
   expect(state.origins).toEqual([
     { origin: "https://chatgpt.com", localStorage: [{ name: "chat", value: "kept" }] },
   ]);

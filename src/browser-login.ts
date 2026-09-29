@@ -229,13 +229,31 @@ function allowedLoginStorageHost(rawHostname: string): boolean {
   return LOGIN_STORAGE_ROOT_DOMAINS.some(root => hostname === root || hostname.endsWith(`.${root}`));
 }
 
+function allowedLoginStoragePartitionKey(rawPartitionKey: unknown): boolean {
+  if (rawPartitionKey === undefined) return true;
+  if (typeof rawPartitionKey !== "string" || rawPartitionKey.length === 0) return false;
+  try {
+    const parsed = new URL(rawPartitionKey);
+    return parsed.protocol === "https:"
+      && !parsed.username
+      && !parsed.password
+      && parsed.pathname === "/"
+      && !parsed.search
+      && !parsed.hash
+      && allowedLoginStorageHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function sanitizeBrowserLoginStorageState(
   storageState: BrowserLoginStorageState,
 ): BrowserLoginStorageState {
   return {
     cookies: storageState.cookies
-      .filter(cookie => !Object.prototype.hasOwnProperty.call(cookie, "partitionKey")
-        && allowedLoginStorageHost(cookie.domain.replace(/^\.+/, "")))
+      .filter(cookie =>
+        allowedLoginStorageHost(cookie.domain.replace(/^\.+/, ""))
+        && allowedLoginStoragePartitionKey((cookie as { partitionKey?: unknown }).partitionKey))
       .map(cookie => ({ ...cookie })),
     origins: storageState.origins
       .filter(origin => origin.origin === CHATGPT_ORIGIN)
