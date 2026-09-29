@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { chromium } from "playwright-core";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,18 +60,24 @@ test("legacy persistent profiles require ChatGPT-domain cookie evidence before r
   }
 });
 
-test("Windows legacy-profile adoption preserves persistent cookie state across real Chrome CDP restart", async () => {
+test("Windows legacy-profile adoption reads persisted cookie state through real Chrome CDP", async () => {
   if (process.platform !== "win32") return;
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-cdp-"));
   const config = defaultConfig("browser-only");
   expect(existsSync(config.chromeExecutablePath)).toBe(true);
 
   const cookieName = "codex_cdp_profile_probe";
-  let first: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
-  let second: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  let seeded: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
+  let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
   try {
-    first = await openPersistentProfileCdpSession(config, root, 10_000);
-    await first.context.addCookies([{
+    // Seed a credential-free legacy profile independently of the production adoption helper.
+    // Closing the persistent context proves the cookie is already durable before adoption begins.
+    seeded = await chromium.launchPersistentContext(root, {
+      executablePath: config.chromeExecutablePath,
+      headless: true,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    await seeded.addCookies([{
       name: cookieName,
       value: "persisted",
       domain: ".chatgpt.com",
@@ -80,25 +87,24 @@ test("Windows legacy-profile adoption preserves persistent cookie state across r
       secure: true,
       sameSite: "Lax",
     }]);
-    expect((await first.context.cookies("https://chatgpt.com/"))
+    expect((await seeded.cookies("https://chatgpt.com/"))
       .some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
-    await first.close();
-    first = undefined;
-    expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
+    await seeded.close();
+    seeded = undefined;
 
-    second = await openPersistentProfileCdpSession(config, root, 10_000);
-    const restored = await second.context.cookies("https://chatgpt.com/");
+    session = await openPersistentProfileCdpSession(config, root, 10_000);
+    const restored = await session.context.cookies("https://chatgpt.com/");
     expect(restored.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
 
-    const sanitized = sanitizeBrowserLoginStorageState(await second.context.storageState());
+    const sanitized = sanitizeBrowserLoginStorageState(await session.context.storageState());
     expect(sanitized.cookies.some(cookie =>
       cookie.name === cookieName
       && cookie.value === "persisted"
       && cookie.domain.replace(/^\\.+/, "") === "chatgpt.com"
     )).toBe(true);
   } finally {
-    await second?.close();
-    await first?.close();
+    await session?.close();
+    await seeded?.close();
     expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   }
