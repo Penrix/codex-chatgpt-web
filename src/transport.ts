@@ -45,7 +45,6 @@ export type {
   ManagedChatGptWebModel,
   ManagedChatGptWebSessionInfo,
   ManagedChatGptWebTransportApi,
-  ManagedChatGptWebTransportConstructor,
   ManagedChatGptWebTransportOptions,
   ManagedChatGptWebTurn,
 } from "./transport-api";
