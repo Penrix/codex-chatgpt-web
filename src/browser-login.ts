@@ -369,12 +369,26 @@ export async function captureSystemBrowserLoginToFile(
   atomicWriteFile(markerPath, `${JSON.stringify(capture.marker)}\n`);
 }
 
+function cookieStoreHasChatGptHost(path: string): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    const bytes = readFileSync(path);
+    return bytes.includes(Buffer.from("chatgpt.com"))
+      || bytes.includes(Buffer.from("openai.com"));
+  } catch {
+    return false;
+  }
+}
+
 export function browserProfileHasLoginEvidence(profileDir: string): boolean {
   const defaultProfile = join(profileDir, "Default");
-  return [
+  const stores = [
     join(defaultProfile, "Network", "Cookies"),
+    join(defaultProfile, "Network", "Cookies-wal"),
     join(defaultProfile, "Cookies"),
-  ].some(existsSync);
+    join(defaultProfile, "Cookies-wal"),
+  ];
+  return stores.some(cookieStoreHasChatGptHost);
 }
 
 async function capturePersistentProfileLogin(
