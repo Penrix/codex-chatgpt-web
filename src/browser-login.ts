@@ -129,6 +129,85 @@ async function waitForDevToolsEndpoint(
   throw new Error("Timed out waiting for existing-profile Chrome remote debugging endpoint");
 }
 
+export interface PersistentProfileCdpSession {
+  context: BrowserContext;
+  close(): Promise<void>;
+}
+
+export async function openPersistentProfileCdpSession(
+  config: Pick<BrowserLoginConfig, "chromeExecutablePath">,
+  profileDir: string,
+  timeoutMs = 30_000,
+): Promise<PersistentProfileCdpSession> {
+  if (!existsSync(config.chromeExecutablePath)) {
+    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}`);
+  }
+  mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  try { chmodSync(profileDir, 0o700); } catch {}
+
+  const activePortPath = join(profileDir, "DevToolsActivePort");
+  rmSync(activePortPath, { force: true });
+  const chrome = spawn(config.chromeExecutablePath, [
+    `--user-data-dir=${profileDir}`,
+    "--remote-debugging-port=0",
+    "--new-window",
+    "--disable-background-mode",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--restore-last-session",
+  ], { env: process.env, stdio: "ignore" });
+
+  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    let cleanupError: unknown;
+    try {
+      await browser?.close();
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      await stopOwnedLoginBrowser(chrome);
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    rmSync(activePortPath, { force: true });
+    if (cleanupError) throw cleanupError;
+  };
+
+  let rejectSpawn!: (error: Error) => void;
+  const spawnFailure = new Promise<never>((_, reject) => {
+    rejectSpawn = reject;
+  });
+  const onSpawnError = (error: Error) => rejectSpawn(error);
+  chrome.once("error", onSpawnError);
+  try {
+    const endpoint = await Promise.race([
+      waitForDevToolsEndpoint(profileDir, chrome, timeoutMs),
+      spawnFailure,
+    ]);
+    browser = await chromium.connectOverCDP(endpoint, { timeout: timeoutMs });
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("Existing-profile Chrome did not expose its default browser context");
+    return { context, close };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; Chrome cleanup also failed: `
+        + `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    chrome.off("error", onSpawnError);
+  }
+}
+
 function allowedLoginStorageHost(rawHostname: string): boolean {
   const hostname = rawHostname.toLowerCase();
   if (!/^[a-z0-9.-]+$/.test(hostname)
@@ -430,40 +509,22 @@ async function capturePersistentProfileLogin(
   if (!existsSync(config.chromeExecutablePath)) {
     throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
   }
-  mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  try { chmodSync(profileDir, 0o700); } catch {}
   if (options.interactive) {
     process.stdout.write(
       "A dedicated Chrome window is open. Sign in to ChatGPT once; the login state will be captured before this browser closes.\n",
     );
   }
 
-  // Reuse legacy DSH profiles through a normal Chrome process first. The owner's Windows
-  // rev-3 receipt proved that launchPersistentContext() could see ChatGPT cookie evidence yet
-  // still fail to restore the authenticated surface. Attaching Playwright after Chrome has
-  // started the existing profile preserves Chrome's own profile/session restoration semantics.
-  const activePortPath = join(profileDir, "DevToolsActivePort");
-  rmSync(activePortPath, { force: true });
-  const chrome = spawn(config.chromeExecutablePath, [
-    `--user-data-dir=${profileDir}`,
-    "--remote-debugging-port=0",
-    "--new-window",
-    "--disable-background-mode",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--restore-last-session",
-    CHATGPT_TEMPORARY_CHAT_URL,
-  ], { env: process.env, stdio: "ignore" });
-
-  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
-  let primaryError: unknown;
+  // Windows rev 3 proved that Playwright launchPersistentContext(profileDir) can see
+  // ChatGPT cookie-store evidence yet fail to restore the authenticated surface. Let normal
+  // Chrome own profile/session restoration first, then attach Playwright over ephemeral loopback CDP.
+  const session = await openPersistentProfileCdpSession(
+    config,
+    profileDir,
+    Math.min(options.timeoutMs ?? 30_000, 30_000),
+  );
   try {
-    const debugTimeoutMs = Math.min(options.timeoutMs ?? 30_000, 30_000);
-    const endpoint = await waitForDevToolsEndpoint(profileDir, chrome, debugTimeoutMs);
-    browser = await chromium.connectOverCDP(endpoint, { timeout: debugTimeoutMs });
-    const context = browser.contexts()[0];
-    if (!context) throw new Error("Existing-profile Chrome did not expose its default browser context");
-
+    const { context } = session;
     const pages = context.pages();
     const page = pages.find(candidate => candidate.url().startsWith(CHATGPT_ORIGIN))
       ?? pages[0]
@@ -490,6 +551,9 @@ async function capturePersistentProfileLogin(
     await assertTemporaryChatPage(page);
 
     const state = sanitizeBrowserLoginStorageState(await context.storageState());
+    if (state.cookies.length === 0) {
+      throw new Error("Authenticated ChatGPT profile produced no reusable ChatGPT/OpenAI cookies");
+    }
     atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
     // Authentication is already proven by the visible Temporary Chat composer.
     // Persist that fact before probing model controls so a capability-UI failure
@@ -503,23 +567,8 @@ async function capturePersistentProfileLogin(
       solAvailable: capabilities.solAvailable,
       proAvailable: capabilities.proAvailable,
     };
-  } catch (error) {
-    primaryError = error;
-    throw error;
   } finally {
-    let cleanupError: unknown;
-    try {
-      await browser?.close();
-    } catch (error) {
-      cleanupError = error;
-    }
-    try {
-      await stopOwnedLoginBrowser(chrome);
-    } catch (error) {
-      cleanupError ??= error;
-    }
-    rmSync(activePortPath, { force: true });
-    if (!primaryError && cleanupError) throw cleanupError;
+    await session.close();
   }
 }
 

@@ -38,6 +38,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: launcher
+      - name: Verify Windows legacy-profile CDP adoption
+        if: runner.os == 'Windows'
+        run: bun test tests/browser-login.test.ts --test-name-pattern "Windows legacy-profile adoption"
       - name: Prepare AVX2-independent Windows runtime
         if: runner.os == 'Windows'
         shell: pwsh

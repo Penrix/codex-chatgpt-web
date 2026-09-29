@@ -9,6 +9,7 @@ import {
   captureSystemBrowserLogin,
   loginToChatGpt,
   loginVerificationMarkerPath,
+  openPersistentProfileCdpSession,
   sanitizeBrowserLoginStorageState,
 } from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
@@ -58,34 +59,21 @@ test("legacy persistent profiles require ChatGPT-domain cookie evidence before r
   }
 });
 
-test("legacy profile reuse starts normal Chrome with a bounded loopback CDP endpoint", async () => {
-  if (process.platform === "win32") return;
-  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-adopt-"));
-  const profile = join(root, "profile");
-  const executable = join(root, "fake-chrome");
-  const argsLog = join(root, "args.log");
-  mkdirSync(join(profile, "Default", "Network"), { recursive: true });
-  writeFileSync(join(profile, "Default", "Network", "Cookies"), "row host_key=.chatgpt.com encrypted_value=...");
-  writeFileSync(executable, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CODEX_LOGIN_ARG_LOG\"\n", { mode: 0o700 });
-  chmodSync(executable, 0o700);
-  const previousLog = process.env.CODEX_LOGIN_ARG_LOG;
-  process.env.CODEX_LOGIN_ARG_LOG = argsLog;
-  try {
-    const config = defaultConfig("browser-only");
-    config.chromeExecutablePath = executable;
-    config.storageStatePath = join(root, "transfer", "storage-state.json");
-    await adoptPersistentBrowserLogin(config, profile, { timeoutMs: 100 }).catch(() => {});
+test("Windows legacy-profile adoption attaches to real Chrome over ephemeral CDP", async () => {
+  if (process.platform !== "win32") return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-cdp-"));
+  const config = defaultConfig("browser-only");
+  expect(existsSync(config.chromeExecutablePath)).toBe(true);
 
-    const launch = readFileSync(argsLog, "utf8").trim();
-    expect(launch).toContain(`--user-data-dir=${profile}`);
-    expect(launch).toContain("--remote-debugging-port=0");
-    expect(launch).toContain("--restore-last-session");
-    expect(launch).toContain(CHATGPT_TEMPORARY_CHAT_URL);
-    expect(launch).not.toContain("--remote-debugging-pipe");
-    expect(launch).not.toContain("--enable-automation");
+  let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  try {
+    session = await openPersistentProfileCdpSession(config, root, 10_000);
+    const page = await session.context.newPage();
+    await page.goto("data:text/html,<title>cdp-smoke</title>");
+    expect(await page.title()).toBe("cdp-smoke");
   } finally {
-    if (previousLog === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
-    else process.env.CODEX_LOGIN_ARG_LOG = previousLog;
+    await session?.close();
+    expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   }
 });
