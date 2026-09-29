@@ -59,7 +59,10 @@ import {
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
-import { loginVerificationMarkerPath } from "../../browser-login";
+import {
+  loginVerificationMarkerPath,
+  sanitizeBrowserLoginStorageState,
+} from "../../browser-login";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -5020,7 +5023,7 @@ export class ChatGptBrowserWorker {
       }
 
       if (this.context && this.config.browserHost === "managed-chrome") {
-        const state = await this.context.storageState();
+        const state = sanitizeBrowserLoginStorageState(await this.context.storageState());
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
       }
       await diagnostics.capture(page, "turn-completed");
