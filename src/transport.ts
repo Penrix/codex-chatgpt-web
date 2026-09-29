@@ -5,7 +5,7 @@ import {
   browserLoginStateExists,
   browserProfileHasLoginEvidence,
   inspectBrowserLoginCapabilities,
-  loginToChatGpt,
+  loginToPersistentChatGptProfile,
   storedBrowserLoginCapabilities,
   type BrowserLoginConfig,
   type BrowserLoginResult,
@@ -120,9 +120,9 @@ export class ManagedChatGptWebTransport {
   constructor(options: ManagedChatGptWebTransportOptions) {
     this.config = managedConfig(options);
     this.worker = ChatGptBrowserWorker.create(this.config);
-    this.loginProfileDir = options.loginProfileDir
-      ? resolve(expandUserPath(options.loginProfileDir))
-      : undefined;
+    this.loginProfileDir = resolve(expandUserPath(
+      options.loginProfileDir ?? resolve(this.config.storageStatePath, ".."),
+    ));
     this.reusableLoginProfileDirs = [...new Set(
       (options.reusableLoginProfileDirs ?? [])
         .map(value => resolve(expandUserPath(value))),
@@ -160,6 +160,7 @@ export class ManagedChatGptWebTransport {
         };
         return "reused";
       } catch (error) {
+        if (this.hasLogin()) return "reused";
         failures.push(`${profileDir}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -172,12 +173,10 @@ export class ManagedChatGptWebTransport {
       );
     }
 
-    const result = await loginToChatGpt(
+    const result = await loginToPersistentChatGptProfile(
       this.loginConfig(),
-      {
-        ...(timeoutMs === undefined ? {} : { timeoutMs }),
-        ...(this.loginProfileDir ? { profileDir: this.loginProfileDir } : {}),
-      },
+      this.loginProfileDir ?? resolve(expandUserPath("./chatgpt-profile")),
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
     this.capabilities = {
       localToolsEnabled: false,
@@ -189,12 +188,10 @@ export class ManagedChatGptWebTransport {
 
   async login(timeoutMs?: number): Promise<BrowserLoginResult> {
     await this.worker.close();
-    const result = await loginToChatGpt(
+    const result = await loginToPersistentChatGptProfile(
       this.loginConfig(),
-      {
-        ...(timeoutMs === undefined ? {} : { timeoutMs }),
-        ...(this.loginProfileDir ? { profileDir: this.loginProfileDir } : {}),
-      },
+      this.loginProfileDir ?? resolve(expandUserPath("./chatgpt-profile")),
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
     this.capabilities = {
       localToolsEnabled: false,
