@@ -42,13 +42,15 @@ test("login starts with normal Chrome and captures state in a headed Keychain-aw
   }
 });
 
-test("legacy persistent profiles with a Chrome cookie DB are recognized as reusable login evidence", () => {
+test("legacy persistent profiles require ChatGPT-domain cookie evidence before reuse", () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-evidence-"));
   try {
     expect(browserProfileHasLoginEvidence(root)).toBe(false);
     const network = join(root, "Default", "Network");
     mkdirSync(network, { recursive: true });
-    writeFileSync(join(network, "Cookies"), "not-a-real-cookie-db");
+    writeFileSync(join(network, "Cookies"), "generic-cookie-db-without-target-domain");
+    expect(browserProfileHasLoginEvidence(root)).toBe(false);
+    writeFileSync(join(network, "Cookies-wal"), "row host_key=.chatgpt.com encrypted_value=...");
     expect(browserProfileHasLoginEvidence(root)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
