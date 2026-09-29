@@ -61,8 +61,12 @@ export interface ManagedChatGptWebTransportApi {
   close(): Promise<void>;
 }
 
-export interface ManagedChatGptWebTransportConstructor {
-  new(options: ManagedChatGptWebTransportOptions): ManagedChatGptWebTransportApi;
+export declare class ManagedChatGptWebTransport implements ManagedChatGptWebTransportApi {
+  constructor(options: ManagedChatGptWebTransportOptions);
+  hasLogin(): boolean;
+  ensureLogin(timeoutMs?: number): Promise<ManagedChatGptWebLoginSource>;
+  login(timeoutMs?: number): Promise<ManagedChatGptWebLoginResult>;
+  inspectSession(): Promise<ManagedChatGptWebSessionInfo>;
+  run(turn: ManagedChatGptWebTurn): Promise<string>;
+  close(): Promise<void>;
 }
-
-export declare const ManagedChatGptWebTransport: ManagedChatGptWebTransportConstructor;
