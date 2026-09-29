@@ -448,7 +448,7 @@ export async function adoptPersistentBrowserLogin(
     throw new Error(`Browser profile has no login cookie store to reuse: ${profileDir}`);
   }
   return await capturePersistentProfileLogin(config, profileDir, {
-    timeoutMs: options.timeoutMs,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     interactive: false,
   });
 }
@@ -459,7 +459,7 @@ export async function loginToChatGpt(
 ): Promise<BrowserLoginResult> {
   const profileDir = options.profileDir ?? join(dirname(config.storageStatePath), "login-profile");
   return await capturePersistentProfileLogin(config, profileDir, {
-    timeoutMs: options.timeoutMs,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     interactive: true,
   });
 }
