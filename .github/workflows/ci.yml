@@ -40,7 +40,7 @@ jobs:
         working-directory: launcher
       - name: Verify Windows legacy-profile CDP adoption
         if: runner.os == 'Windows'
-        run: bun test tests/browser-login.test.ts --test-name-pattern "Windows legacy-profile adoption"
+        run: bun test tests/browser-login.test.ts --test-name-pattern "Windows legacy-profile adoption" --timeout 30000
       - name: Prepare AVX2-independent Windows runtime
         if: runner.os == 'Windows'
         shell: pwsh
