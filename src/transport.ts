@@ -17,9 +17,15 @@ import {
 import {
   CHATGPT_WEB_BACKEND_MODEL,
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
-  type ChatGptWebAdapterEffort,
-  type ChatGptWebAutomaticBackendModel,
 } from "./chatgpt-web-models";
+import type {
+  ManagedChatGptWebEffort,
+  ManagedChatGptWebModel,
+  ManagedChatGptWebSessionInfo,
+  ManagedChatGptWebTransportApi,
+  ManagedChatGptWebTransportOptions,
+  ManagedChatGptWebTurn,
+} from "./transport-api";
 import {
   ChatGptBrowserWorker,
   type ResolvedBrowserConfig,
@@ -32,39 +38,17 @@ export {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
 } from "./chatgpt-web-models";
 
-export type ManagedChatGptWebModel = ChatGptWebAutomaticBackendModel;
-export type ManagedChatGptWebEffort = ChatGptWebAdapterEffort;
-
-export interface ManagedChatGptWebTransportOptions {
-  storageStatePath: string;
-  chromeExecutablePath?: string;
-  headed?: boolean;
-  turnTimeoutMs?: number;
-  browserDiagnosticsPath?: string;
-  loginProfileDir?: string;
-  reusableLoginProfileDirs?: string[];
-  allowInteractiveLogin?: boolean;
-}
-
-export interface ManagedChatGptWebTurn {
-  model: ManagedChatGptWebModel;
-  effort?: ManagedChatGptWebEffort;
-  prompt: string;
-  signal?: AbortSignal;
-  traceId?: string;
-  onHeartbeat?: () => void;
-  onReasoningSummary?: (text: string, continuation?: boolean) => void;
-  onCommentary?: (text: string, continuation?: boolean) => void;
-  onTextDelta?: (text: string) => void;
-}
-
-export interface ManagedChatGptWebSessionInfo {
-  authenticated: true;
-  temporary: true;
-  url: string;
-  solAvailable: boolean;
-  proAvailable: boolean;
-}
+export type {
+  ManagedChatGptWebEffort,
+  ManagedChatGptWebLoginResult,
+  ManagedChatGptWebLoginSource,
+  ManagedChatGptWebModel,
+  ManagedChatGptWebSessionInfo,
+  ManagedChatGptWebTransportApi,
+  ManagedChatGptWebTransportConstructor,
+  ManagedChatGptWebTransportOptions,
+  ManagedChatGptWebTurn,
+} from "./transport-api";
 
 type SubmissionPhase = "prepared" | "send_activated" | "submitted";
 
@@ -111,7 +95,7 @@ function submittedTurnFailure(phase: SubmissionPhase, error: unknown): Error {
  * Reusable ChatGPT Web browser transport with no Codex route, Responses server, MCP tunnel,
  * or desktop Launcher dependency. The caller owns conversation history and tool execution.
  */
-export class ManagedChatGptWebTransport {
+export class ManagedChatGptWebTransport implements ManagedChatGptWebTransportApi {
   private readonly config: ResolvedBrowserConfig;
   private readonly worker: ChatGptBrowserWorker;
   private readonly loginProfileDir: string;
