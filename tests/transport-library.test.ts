@@ -85,6 +85,25 @@ describe("managed ChatGPT Web transport library", () => {
     }
   });
 
+  it("can forbid interactive login without launching a browser", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chatgpt-web-transport-no-login-"));
+    const transport = new ManagedChatGptWebTransport({
+      storageStatePath: join(root, "storage-state.json"),
+      chromeExecutablePath: process.execPath,
+      loginProfileDir: root,
+      reusableLoginProfileDirs: [],
+      allowInteractiveLogin: false,
+    });
+    try {
+      await expect(transport.ensureLogin(1)).rejects.toThrow(
+        "interactive login is disabled for this run",
+      );
+    } finally {
+      await transport.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("exports only automatic browser backend identities", () => {
     expect(CHATGPT_WEB_BACKEND_MODEL).toBe("gpt-5.6-sol");
     expect(CHATGPT_WEB_LUNA_BACKEND_MODEL).toBe("gpt-5.6-luna");
