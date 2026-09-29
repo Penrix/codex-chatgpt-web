@@ -69,6 +69,7 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
   const cookieName = "codex_cdp_profile_probe";
   let seeded: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  let restoredBrowser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     // Seed a credential-free legacy profile independently of the production adoption helper.
     // Closing the persistent context proves the cookie is already durable before adoption begins.
@@ -110,7 +111,23 @@ test("Windows legacy-profile adoption reads persisted cookie state through real 
     }
     expect(sanitizedProbe.value).toBe("persisted");
     expect(["chatgpt.com", ".chatgpt.com"]).toContain(sanitizedProbe.domain);
+
+    restoredBrowser = await chromium.launch({
+      executablePath: config.chromeExecutablePath,
+      headless: true,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    const restoredContext = await restoredBrowser.newContext({ storageState: sanitized });
+    try {
+      const imported = await restoredContext.cookies("https://chatgpt.com/");
+      expect(imported.some(cookie =>
+        cookie.name === cookieName && cookie.value === "persisted"
+      )).toBe(true);
+    } finally {
+      await restoredContext.close();
+    }
   } finally {
+    await restoredBrowser?.close();
     await session?.close();
     await seeded?.close();
     expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
