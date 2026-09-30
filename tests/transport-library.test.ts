@@ -6,7 +6,14 @@ import {
   CHATGPT_WEB_BACKEND_MODEL,
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
 } from "../src/chatgpt-web-models";
-import { ManagedChatGptWebTransport } from "../src/transport";
+import {
+  CHATGPT_WEB_INSTANT_CONTEXT_WINDOW,
+  CHATGPT_WEB_LUNA_CONTEXT_WINDOW,
+  CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW,
+  CHATGPT_WEB_PRO_MODEL_CONTEXT_WINDOW,
+  CHATGPT_WEB_PRO_STANDARD_CONTEXT_WINDOW,
+  ManagedChatGptWebTransport,
+} from "../src/transport";
 import { ChatGptBrowserWorker, type ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 
 describe("managed ChatGPT Web transport library", () => {
@@ -102,6 +109,14 @@ describe("managed ChatGPT Web transport library", () => {
       await transport.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("exports measured context windows for library consumers", () => {
+    expect(CHATGPT_WEB_INSTANT_CONTEXT_WINDOW).toBe(41_000);
+    expect(CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW).toBe(90_000);
+    expect(CHATGPT_WEB_PRO_STANDARD_CONTEXT_WINDOW).toBe(111_193);
+    expect(CHATGPT_WEB_PRO_MODEL_CONTEXT_WINDOW).toBe(112_193);
+    expect(CHATGPT_WEB_LUNA_CONTEXT_WINDOW).toBe(1_050_000);
   });
 
   it("exports only automatic browser backend identities", () => {
