@@ -178,6 +178,17 @@ test("browser turns have no absolute deadline unless one is explicitly configure
   })).toThrow("turnTimeoutMs must be a positive finite number");
 });
 
+test("managed Chrome persists only sanitized login state", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const persistence = workerSource.indexOf('if (this.context && this.config.browserHost === "managed-chrome")');
+  expect(persistence).toBeGreaterThan(-1);
+  const persistenceBlock = workerSource.slice(persistence, persistence + 500);
+  expect(persistenceBlock).toContain(
+    "sanitizeBrowserLoginStorageState(await this.context.storageState())",
+  );
+  expect(persistenceBlock).not.toContain("const state = await this.context.storageState();");
+});
+
 test("managed Chrome defaults follow the host platform", () => {
   expect(defaultChromeExecutable("darwin")).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
   expect(defaultChromeExecutable("linux")).toBe("/usr/bin/google-chrome");

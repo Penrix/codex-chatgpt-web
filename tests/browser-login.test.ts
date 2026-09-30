@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chromium } from "playwright-core";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  adoptPersistentBrowserLogin,
   browserLoginStateExists,
+  browserProfileHasLoginEvidence,
   captureSystemBrowserLogin,
   loginToChatGpt,
   loginVerificationMarkerPath,
+  openPersistentProfileCdpSession,
   sanitizeBrowserLoginStorageState,
 } from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
@@ -37,6 +41,130 @@ test("login starts with normal Chrome and captures state in a headed Keychain-aw
   } finally {
     if (previousLog === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
     else process.env.CODEX_LOGIN_ARG_LOG = previousLog;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy persistent profiles require ChatGPT-domain cookie evidence before reuse", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-evidence-"));
+  try {
+    expect(browserProfileHasLoginEvidence(root)).toBe(false);
+    const network = join(root, "Default", "Network");
+    mkdirSync(network, { recursive: true });
+    writeFileSync(join(network, "Cookies"), "generic-cookie-db-without-target-domain");
+    expect(browserProfileHasLoginEvidence(root)).toBe(false);
+    writeFileSync(join(network, "Cookies-wal"), "row host_key=.chatgpt.com encrypted_value=...");
+    expect(browserProfileHasLoginEvidence(root)).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows legacy-profile adoption reads persisted cookie state through real Chrome CDP", async () => {
+  if (process.platform !== "win32") return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-profile-cdp-"));
+  const config = defaultConfig("browser-only");
+  expect(existsSync(config.chromeExecutablePath)).toBe(true);
+
+  const cookieName = "codex_cdp_profile_probe";
+  const sessionCookieName = "codex_cdp_session_probe";
+  let seeded: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
+  let session: Awaited<ReturnType<typeof openPersistentProfileCdpSession>> | undefined;
+  let restoredBrowser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    // Seed a credential-free legacy profile independently of the production adoption helper.
+    // Closing the persistent context proves the cookie is already durable before adoption begins.
+    seeded = await chromium.launchPersistentContext(root, {
+      executablePath: config.chromeExecutablePath,
+      headless: true,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    await seeded.addCookies([
+      {
+        name: cookieName,
+        value: "persisted",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: Math.floor(Date.now() / 1000) + 3600,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+      {
+        name: sessionCookieName,
+        value: "session",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+    ]);
+    const seededCookies = await seeded.cookies("https://chatgpt.com/");
+    expect(seededCookies.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    expect(seededCookies.some(cookie =>
+      cookie.name === sessionCookieName && cookie.value === "session" && cookie.expires === -1
+    )).toBe(true);
+    await seeded.close();
+    seeded = undefined;
+
+    session = await openPersistentProfileCdpSession(config, root, 10_000);
+    const restored = await session.context.cookies("https://chatgpt.com/");
+    expect(restored.some(cookie => cookie.name === cookieName && cookie.value === "persisted")).toBe(true);
+    expect(restored.some(cookie =>
+      cookie.name === sessionCookieName && cookie.value === "session" && cookie.expires === -1
+    )).toBe(true);
+
+    const rawState = await session.context.storageState();
+    const rawProbe = rawState.cookies.find(cookie => cookie.name === cookieName);
+    if (!rawProbe) {
+      throw new Error("CDP storageState omitted the persisted probe cookie");
+    }
+    expect(rawProbe.value).toBe("persisted");
+    const rawSessionProbe = rawState.cookies.find(cookie => cookie.name === sessionCookieName);
+    if (!rawSessionProbe) {
+      throw new Error("CDP storageState omitted the restored session probe cookie");
+    }
+    expect(rawSessionProbe.value).toBe("session");
+    expect(rawSessionProbe.expires).toBe(-1);
+
+    const sanitized = sanitizeBrowserLoginStorageState(rawState);
+    const sanitizedProbe = sanitized.cookies.find(cookie => cookie.name === cookieName);
+    if (!sanitizedProbe) {
+      throw new Error("Login-state sanitizer removed persisted probe cookie: " + JSON.stringify(rawProbe));
+    }
+    expect(sanitizedProbe.value).toBe("persisted");
+    expect(["chatgpt.com", ".chatgpt.com"]).toContain(sanitizedProbe.domain);
+    const sanitizedSessionProbe = sanitized.cookies.find(cookie => cookie.name === sessionCookieName);
+    if (!sanitizedSessionProbe) {
+      throw new Error("Login-state sanitizer removed restored session probe cookie");
+    }
+    expect(sanitizedSessionProbe.value).toBe("session");
+    expect(sanitizedSessionProbe.expires).toBe(-1);
+
+    restoredBrowser = await chromium.launch({
+      executablePath: config.chromeExecutablePath,
+      headless: true,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    const restoredContext = await restoredBrowser.newContext({ storageState: sanitized });
+    try {
+      const imported = await restoredContext.cookies("https://chatgpt.com/");
+      expect(imported.some(cookie =>
+        cookie.name === cookieName && cookie.value === "persisted"
+      )).toBe(true);
+      expect(imported.some(cookie =>
+        cookie.name === sessionCookieName && cookie.value === "session"
+      )).toBe(true);
+    } finally {
+      await restoredContext.close();
+    }
+  } finally {
+    await restoredBrowser?.close();
+    await session?.close();
+    await seeded?.close();
+    expect(existsSync(join(root, "DevToolsActivePort"))).toBe(false);
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -114,7 +242,8 @@ test("passkey storage capture excludes identity-provider and partitioned state",
     cookies: [
       cookie("chatgpt", ".chatgpt.com"),
       cookie("openai", "auth.openai.com"),
-      cookie("partitioned", ".chatgpt.com", { partitionKey: "https://accounts.google.com" }),
+      cookie("first-party-partitioned", ".chatgpt.com", { partitionKey: "https://chatgpt.com" }),
+      cookie("idp-partitioned", ".chatgpt.com", { partitionKey: "https://accounts.google.com" }),
       cookie("google", ".accounts.google.com"),
       cookie("lookalike", ".chatgpt.com.attacker.example"),
     ],
@@ -123,7 +252,7 @@ test("passkey storage capture excludes identity-provider and partitioned state",
       { origin: "https://accounts.google.com", localStorage: [{ name: "idp", value: "removed" }] },
     ],
   });
-  expect(state.cookies.map(value => value.name)).toEqual(["chatgpt", "openai"]);
+  expect(state.cookies.map(value => value.name)).toEqual(["chatgpt", "openai", "first-party-partitioned"]);
   expect(state.origins).toEqual([
     { origin: "https://chatgpt.com", localStorage: [{ name: "chat", value: "kept" }] },
   ]);

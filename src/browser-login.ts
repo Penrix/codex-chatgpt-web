@@ -7,10 +7,13 @@ import { atomicWriteFile } from "./config";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
+
+export type BrowserLoginConfig = Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">;
 
 export interface BrowserLoginResult {
   storageStatePath: string;
@@ -95,6 +98,116 @@ async function stopOwnedLoginBrowser(browser: ChildProcess): Promise<void> {
   if (!await forced) throw new Error("The dedicated Chrome login process did not exit");
 }
 
+async function waitForDevToolsEndpoint(
+  profileDir: string,
+  browser: ChildProcess,
+  timeoutMs: number,
+): Promise<string> {
+  const activePortPath = join(profileDir, "DevToolsActivePort");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (browserProcessExited(browser)) {
+      throw new Error("Existing-profile Chrome exited before remote debugging became ready");
+    }
+    if (existsSync(activePortPath)) {
+      try {
+        const [rawPort, browserPath] = readFileSync(activePortPath, "utf8").trim().split(/\r?\n/);
+        const port = Number(rawPort);
+        if (Number.isInteger(port)
+          && port >= 1
+          && port <= 65_535
+          && typeof browserPath === "string"
+          && browserPath.startsWith("/devtools/browser/")) {
+          return `http://127.0.0.1:${port}`;
+        }
+      } catch {
+        // Chrome may still be replacing DevToolsActivePort; retry until the bounded deadline.
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for existing-profile Chrome remote debugging endpoint");
+}
+
+export interface PersistentProfileCdpSession {
+  context: BrowserContext;
+  close(): Promise<void>;
+}
+
+export async function openPersistentProfileCdpSession(
+  config: Pick<BrowserLoginConfig, "chromeExecutablePath">,
+  profileDir: string,
+  timeoutMs = 30_000,
+): Promise<PersistentProfileCdpSession> {
+  if (!existsSync(config.chromeExecutablePath)) {
+    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}`);
+  }
+  mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  try { chmodSync(profileDir, 0o700); } catch {}
+
+  const activePortPath = join(profileDir, "DevToolsActivePort");
+  rmSync(activePortPath, { force: true });
+  const chrome = spawn(config.chromeExecutablePath, [
+    `--user-data-dir=${profileDir}`,
+    "--remote-debugging-port=0",
+    "--new-window",
+    "--disable-background-mode",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--restore-last-session",
+  ], { env: process.env, stdio: "ignore" });
+
+  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    let cleanupError: unknown;
+    try {
+      await browser?.close();
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      await stopOwnedLoginBrowser(chrome);
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    rmSync(activePortPath, { force: true });
+    if (cleanupError) throw cleanupError;
+  };
+
+  let rejectSpawn!: (error: Error) => void;
+  const spawnFailure = new Promise<never>((_, reject) => {
+    rejectSpawn = reject;
+  });
+  const onSpawnError = (error: Error) => rejectSpawn(error);
+  chrome.once("error", onSpawnError);
+  try {
+    const endpoint = await Promise.race([
+      waitForDevToolsEndpoint(profileDir, chrome, timeoutMs),
+      spawnFailure,
+    ]);
+    browser = await chromium.connectOverCDP(endpoint, { timeout: timeoutMs });
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("Existing-profile Chrome did not expose its default browser context");
+    return { context, close };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; Chrome cleanup also failed: `
+        + `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    chrome.off("error", onSpawnError);
+  }
+}
+
 function allowedLoginStorageHost(rawHostname: string): boolean {
   const hostname = rawHostname.toLowerCase();
   if (!/^[a-z0-9.-]+$/.test(hostname)
@@ -116,13 +229,31 @@ function allowedLoginStorageHost(rawHostname: string): boolean {
   return LOGIN_STORAGE_ROOT_DOMAINS.some(root => hostname === root || hostname.endsWith(`.${root}`));
 }
 
+function allowedLoginStoragePartitionKey(rawPartitionKey: unknown): boolean {
+  if (rawPartitionKey === undefined) return true;
+  if (typeof rawPartitionKey !== "string" || rawPartitionKey.length === 0) return false;
+  try {
+    const parsed = new URL(rawPartitionKey);
+    return parsed.protocol === "https:"
+      && !parsed.username
+      && !parsed.password
+      && parsed.pathname === "/"
+      && !parsed.search
+      && !parsed.hash
+      && allowedLoginStorageHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function sanitizeBrowserLoginStorageState(
   storageState: BrowserLoginStorageState,
 ): BrowserLoginStorageState {
   return {
     cookies: storageState.cookies
-      .filter(cookie => !Object.prototype.hasOwnProperty.call(cookie, "partitionKey")
-        && allowedLoginStorageHost(cookie.domain.replace(/^\.+/, "")))
+      .filter(cookie =>
+        allowedLoginStorageHost(cookie.domain.replace(/^\.+/, ""))
+        && allowedLoginStoragePartitionKey((cookie as { partitionKey?: unknown }).partitionKey))
       .map(cookie => ({ ...cookie })),
     origins: storageState.origins
       .filter(origin => origin.origin === CHATGPT_ORIGIN)
@@ -139,7 +270,7 @@ export function loginVerificationMarkerPath(storageStatePath: string): string {
 
 function writeVerificationMarker(
   storageStatePath: string,
-  capabilities: ChatGptWebAccountCapabilities,
+  capabilities: Partial<ChatGptWebAccountCapabilities> = {},
 ): void {
   const marker: LoginVerificationMarker = {
     version: 1,
@@ -151,7 +282,7 @@ function writeVerificationMarker(
 }
 
 async function inspectStoredState(
-  config: AppConfig,
+  config: BrowserLoginConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
 ): Promise<ChatGptWebAccountCapabilities & { url: string }> {
   const verifierBrowser = await chromium.launch({
@@ -177,7 +308,7 @@ async function inspectStoredState(
   }
 }
 
-export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<ChatGptWebAccountCapabilities> {
+export async function inspectBrowserLoginCapabilities(config: BrowserLoginConfig): Promise<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
   writeVerificationMarker(config.storageStatePath, inspected);
@@ -185,7 +316,7 @@ export async function inspectBrowserLoginCapabilities(config: AppConfig): Promis
 }
 
 export function storedBrowserLoginCapabilities(
-  config: AppConfig,
+  config: BrowserLoginConfig,
 ): Partial<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) return {};
   try {
@@ -200,7 +331,7 @@ export function storedBrowserLoginCapabilities(
 }
 
 export async function captureSystemBrowserLogin(
-  config: Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">,
+  config: BrowserLoginConfig,
   options: SystemBrowserLoginOptions,
 ): Promise<SystemBrowserLoginCapture> {
   if (process.platform !== "darwin") {
@@ -356,7 +487,7 @@ export async function captureSystemBrowserLogin(
 }
 
 export async function captureSystemBrowserLoginToFile(
-  config: Pick<AppConfig, "chromeExecutablePath" | "storageStatePath">,
+  config: BrowserLoginConfig,
   options: SystemBrowserLoginOptions,
 ): Promise<void> {
   const capture = await captureSystemBrowserLogin(config, options);
@@ -366,8 +497,126 @@ export async function captureSystemBrowserLoginToFile(
   atomicWriteFile(markerPath, `${JSON.stringify(capture.marker)}\n`);
 }
 
+function cookieStoreHasChatGptHost(path: string): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    const bytes = readFileSync(path);
+    return bytes.includes(Buffer.from("chatgpt.com"))
+      || bytes.includes(Buffer.from("openai.com"));
+  } catch {
+    return false;
+  }
+}
+
+export function browserProfileHasLoginEvidence(profileDir: string): boolean {
+  const defaultProfile = join(profileDir, "Default");
+  const stores = [
+    join(defaultProfile, "Network", "Cookies"),
+    join(defaultProfile, "Network", "Cookies-wal"),
+    join(defaultProfile, "Cookies"),
+    join(defaultProfile, "Cookies-wal"),
+  ];
+  return stores.some(cookieStoreHasChatGptHost);
+}
+
+async function capturePersistentProfileLogin(
+  config: BrowserLoginConfig,
+  profileDir: string,
+  options: { timeoutMs?: number; interactive?: boolean } = {},
+): Promise<BrowserLoginResult> {
+  if (!existsSync(config.chromeExecutablePath)) {
+    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
+  }
+  if (options.interactive) {
+    process.stdout.write(
+      "A dedicated Chrome window is open. Sign in to ChatGPT once; the login state will be captured before this browser closes.\n",
+    );
+  }
+
+  // Windows rev 3 proved that Playwright launchPersistentContext(profileDir) can see
+  // ChatGPT cookie-store evidence yet fail to restore the authenticated surface. Let normal
+  // Chrome own profile/session restoration first, then attach Playwright over ephemeral loopback CDP.
+  const session = await openPersistentProfileCdpSession(
+    config,
+    profileDir,
+    Math.min(options.timeoutMs ?? 30_000, 30_000),
+  );
+  try {
+    const { context } = session;
+    const pages = context.pages();
+    const page = pages.find(candidate => candidate.url().startsWith(CHATGPT_ORIGIN))
+      ?? pages[0]
+      ?? await context.newPage();
+    if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
+      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+    }
+
+    const composer = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
+    try {
+      await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });
+    } catch (error) {
+      throw new Error(
+        options.interactive
+          ? "ChatGPT sign-in did not produce a visible composer before the login timeout"
+          : "Existing ChatGPT browser profile could not be verified without another sign-in",
+        { cause: error },
+      );
+    }
+    await assertAuthenticatedChatGptPage(page);
+    await assertTemporaryChatPage(page);
+
+    const state = sanitizeBrowserLoginStorageState(await context.storageState());
+    if (state.cookies.length === 0) {
+      throw new Error("Authenticated ChatGPT profile produced no reusable ChatGPT/OpenAI cookies");
+    }
+    atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
+    // Authentication is already proven by the visible Temporary Chat composer.
+    // Persist that fact before probing model controls so a capability-UI failure
+    // can never turn a valid login back into "please sign in again".
+    writeVerificationMarker(config.storageStatePath);
+    const capabilities = await detectChatGptAccountCapabilities(page);
+    writeVerificationMarker(config.storageStatePath, capabilities);
+    return {
+      storageStatePath: config.storageStatePath,
+      accountSurfaceUrl: page.url(),
+      solAvailable: capabilities.solAvailable,
+      proAvailable: capabilities.proAvailable,
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+export async function adoptPersistentBrowserLogin(
+  config: BrowserLoginConfig,
+  profileDir: string,
+  options: { timeoutMs?: number } = {},
+): Promise<BrowserLoginResult> {
+  if (!browserProfileHasLoginEvidence(profileDir)) {
+    throw new Error(`Browser profile has no login cookie store to reuse: ${profileDir}`);
+  }
+  return await capturePersistentProfileLogin(config, profileDir, {
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    interactive: false,
+  });
+}
+
+export async function loginToPersistentChatGptProfile(
+  config: BrowserLoginConfig,
+  profileDir: string,
+  options: { timeoutMs?: number } = {},
+): Promise<BrowserLoginResult> {
+  return await capturePersistentProfileLogin(config, profileDir, {
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    interactive: true,
+  });
+}
+
 export async function loginToChatGpt(
-  config: AppConfig,
+  config: BrowserLoginConfig,
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
   if (!existsSync(config.chromeExecutablePath)) {
@@ -434,7 +683,7 @@ export async function loginToChatGpt(
   }
 }
 
-export function browserLoginStateExists(config: AppConfig): boolean {
+export function browserLoginStateExists(config: BrowserLoginConfig): boolean {
   if (!existsSync(config.storageStatePath)) return false;
   const markerPath = loginVerificationMarkerPath(config.storageStatePath);
   if (!existsSync(markerPath)) return false;
@@ -446,7 +695,7 @@ export function browserLoginStateExists(config: AppConfig): boolean {
   }
 }
 
-export async function checkBrowserEngine(config: AppConfig): Promise<void> {
+export async function checkBrowserEngine(config: BrowserLoginConfig): Promise<void> {
   if (!existsSync(config.chromeExecutablePath)) throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}`);
   const browser = await chromium.launch({
     executablePath: config.chromeExecutablePath,
