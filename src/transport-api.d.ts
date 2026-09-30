@@ -1,5 +1,10 @@
 export declare const CHATGPT_WEB_BACKEND_MODEL: "gpt-5.6-sol";
 export declare const CHATGPT_WEB_LUNA_BACKEND_MODEL: "gpt-5.6-luna";
+export declare const CHATGPT_WEB_INSTANT_CONTEXT_WINDOW: number;
+export declare const CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW: number;
+export declare const CHATGPT_WEB_PRO_STANDARD_CONTEXT_WINDOW: number;
+export declare const CHATGPT_WEB_PRO_MODEL_CONTEXT_WINDOW: number;
+export declare const CHATGPT_WEB_LUNA_CONTEXT_WINDOW: number;
 
 export type ManagedChatGptWebModel =
   | typeof CHATGPT_WEB_BACKEND_MODEL
